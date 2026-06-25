@@ -1,0 +1,8 @@
+extender_type: "service"
+extender_file: "service_filehost.so"
+ax_file: "ax_config.axs"
+
+service_name: "FileHost"
+service_config: |
+  ssl_cert: "server.rsa.crt"
+  ssl_key: "server.rsa.key"
