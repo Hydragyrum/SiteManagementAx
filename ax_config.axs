@@ -198,15 +198,10 @@ function data_handler(data) {
 }
 
 // ── Host File Dialog ─────────────────────────────────────────────────────────
-
-function showHostFileDialog() {
-    let labelFile = form.create_label("File:");
-    let filePath  = form.create_label("<i style='color:#888'>No file selected</i>");
-    let browseBtn = form.create_button("Browse...");
-    var selectedPath = "";
-
+function getHostedFileParams(container) {
     let labelURI  = form.create_label("URI Path:");
     let textURI   = form.create_textline("/hosted/payload.bin");
+    container.put("uri", textURI);
 
     let labelHost = form.create_label("Bind Host:");
     let comboHost = form.create_combo();
@@ -214,23 +209,72 @@ function showHostFileDialog() {
         comboHost.addItem(STATE.interfaces[idx]);
     }
     comboHost.setCurrentIndex(0);
+    container.put("bindHost", comboHost);
 
     let labelPort = form.create_label("Port:");
     let spinPort  = form.create_spin();
     spinPort.setRange(1, 65535);
     spinPort.setValue(8080);
+    container.put("port", spinPort);
 
     let labelCT   = form.create_label("Content-Type:");
     let comboCT   = form.create_combo();
     comboCT.addItems(CONTENT_TYPES);
     comboCT.setCurrentIndex(0);
+    container.put("contentType", comboCT);
 
     let labelFN   = form.create_label("Download Name:");
     let textFN    = form.create_textline("");
     textFN.setPlaceholder("Optional filename for Content-Disposition");
+    container.put("fileName", textFN);
 
     let checkSSL     = form.create_check("Enable SSL/TLS");
     let checkOneShot = form.create_check("One-shot (serve once, then remove)");
+    container.put("ssl", checkSSL);
+    container.put("oneShot", checkOneShot);
+
+    let grid = form.create_gridlayout();
+    grid.addWidget(labelURI,      0, 0, 1, 1);
+    grid.addWidget(textURI,       0, 1, 1, 3);
+    grid.addWidget(labelHost,     1, 0, 1, 1);
+    grid.addWidget(comboHost,     1, 1, 1, 3);
+    grid.addWidget(labelPort,     2, 0, 1, 1);
+    grid.addWidget(spinPort,      2, 1, 1, 1);
+    grid.addWidget(labelCT,       3, 0, 1, 1);
+    grid.addWidget(comboCT,       3, 1, 1, 3);
+    grid.addWidget(labelFN,       4, 0, 1, 1);
+    grid.addWidget(textFN,        4, 1, 1, 3);
+    grid.addWidget(checkSSL,      5, 0, 1, 2);
+    grid.addWidget(checkOneShot,  5, 2, 1, 2);
+
+    let panel = form.create_panel();
+    panel.setLayout(grid);
+
+    return panel;
+}
+
+function showHostFileDialog() {
+    let container = form.create_container();
+    let labelFile = form.create_label("File:");
+    let filePath  = form.create_label("<i style='color:#888'>No file selected</i>");
+    let browseBtn = form.create_button("Browse...");
+    var selectedPath = "";
+
+
+    let labelConf = form.create_label("Hosting Type:");
+    let comboConf = form.create_combo();
+    comboConf.setItems(["Hosted", "Discord"]);
+
+    let hostedFileLayout = getHostedFileParams(container);
+    let discordFileLayout = form.create_label("<i style='color:#888'>Discord hosting is not yet implemented.</i>");
+
+    let stack = form.create_stack();
+    stack.addPage(hostedFileLayout, "File Hosting Options");
+    stack.addPage(discordFileLayout, "Discord Hosting Options");
+
+    form.connect(comboConf, "currentIndexChanged", function(idx) {
+        stack.setCurrentIndex(idx);
+    });
 
     form.connect(browseBtn, "clicked", function() {
         let path = ax.prompt_open_file("Select file to host", "All Files (*)");
@@ -239,13 +283,13 @@ function showHostFileDialog() {
             let basename = ax.file_basename(path);
             filePath.setText(basename + " (" + ax.format_size(ax.file_size(path)) + ")");
 
-            textURI.setText("/hosted/" + basename);
-            textFN.setText(basename);
+            container.get("uri").setText("/hosted/" + basename);
+            container.get("fileName").setText(basename);
 
             let detectedMime = detectMimeType(basename);
             for (let k = 0; k < CONTENT_TYPES.length; k++) {
                 if (CONTENT_TYPES[k] === detectedMime) {
-                    comboCT.setCurrentIndex(k);
+                    container.get("contentType").setCurrentIndex(k);
                     break;
                 }
             }
@@ -256,18 +300,9 @@ function showHostFileDialog() {
     grid.addWidget(labelFile,     0, 0, 1, 1);
     grid.addWidget(browseBtn,     0, 1, 1, 1);
     grid.addWidget(filePath,      0, 2, 1, 2);
-    grid.addWidget(labelURI,      1, 0, 1, 1);
-    grid.addWidget(textURI,       1, 1, 1, 3);
-    grid.addWidget(labelHost,     2, 0, 1, 1);
-    grid.addWidget(comboHost,     2, 1, 1, 3);
-    grid.addWidget(labelPort,     3, 0, 1, 1);
-    grid.addWidget(spinPort,      3, 1, 1, 1);
-    grid.addWidget(labelCT,       4, 0, 1, 1);
-    grid.addWidget(comboCT,       4, 1, 1, 3);
-    grid.addWidget(labelFN,       5, 0, 1, 1);
-    grid.addWidget(textFN,        5, 1, 1, 3);
-    grid.addWidget(checkSSL,      6, 0, 1, 2);
-    grid.addWidget(checkOneShot,  6, 2, 1, 2);
+    grid.addWidget(labelConf,     1, 0, 1, 1);
+    grid.addWidget(comboConf,     1, 1, 1, 3);
+    grid.addWidget(stack,         2, 0, 1, 4);
 
     let dialog = form.create_dialog("Host File");
     dialog.setSize(600, 300);
@@ -287,7 +322,7 @@ function showHostFileDialog() {
         return;
     }
 
-    let uri = textURI.text();
+    let uri = container.get("uri").text();
     if (!uri || uri.length === 0) {
         ax.show_message("FileHost", "URI path is required.");
         return;
@@ -295,13 +330,13 @@ function showHostFileDialog() {
 
     ax.service_command("FileHost", "host_file", {
         uri:          uri,
-        host:         comboHost.currentText(),
-        port:         spinPort.value(),
-        ssl:          checkSSL.isChecked(),
-        content_type: comboCT.currentText(),
-        file_name:    textFN.text(),
+        host:         container.get("bindHost").currentText(),
+        port:         container.get("port").value(),
+        ssl:          container.get("ssl").isChecked(),
+        content_type: container.get("contentType").currentText(),
+        file_name:    container.get("fileName").text(),
         file_b64:     fileB64,
-        one_shot:     checkOneShot.isChecked(),
+        one_shot:     container.get("oneShot").isChecked(),
     });
 }
 
