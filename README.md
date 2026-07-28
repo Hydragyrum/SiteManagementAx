@@ -75,9 +75,11 @@ service_name: "FileHost"
 service_config: |
   ssl_cert: "server.rsa.crt"
   ssl_key: "server.rsa.key"
+  token_enc_key: "CHANGE_ME_WITH_A_LONG_RANDOM_SECRET"
 ```
 
 SSL cert/key paths are relative to the server working directory. Required only if hosting HTTPS sites.
+Set `token_enc_key` to a high-entropy secret (recommended: at least 32 random characters) so stored GitLab access tokens are encrypted with a strong key.
 
 ## Usage
 

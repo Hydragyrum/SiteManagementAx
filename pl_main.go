@@ -1,9 +1,12 @@
 package main
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"golang.org/x/crypto/pbkdf2"
 
 	adaptix "github.com/Adaptix-Framework/axc2"
 )
@@ -21,11 +24,12 @@ type Teamserver interface {
 type PluginService struct{}
 
 var (
-	Ts        Teamserver
-	ModuleDir string
-	SSLCert   string
-	SSLKey    string
-	SiteMgr   *SiteManager
+	Ts              Teamserver
+	ModuleDir       string
+	SSLCert         string
+	SSLKey          string
+	SiteMgr         *SiteManager
+	TokenEncKeyPass string
 )
 
 func InitPlugin(ts any, moduleDir string, serviceConfig string) adaptix.PluginService {
@@ -41,6 +45,10 @@ func InitPlugin(ts any, moduleDir string, serviceConfig string) adaptix.PluginSe
 		if strings.HasPrefix(line, "ssl_key:") {
 			val := strings.TrimSpace(strings.TrimPrefix(line, "ssl_key:"))
 			SSLKey = strings.Trim(val, `"'`)
+		}
+		if strings.HasPrefix(line, "token_enc_key:") {
+			val := strings.TrimSpace(strings.TrimPrefix(line, "token_enc_key:"))
+			TokenEncKeyPass = strings.Trim(val, `"'`)
 		}
 	}
 
@@ -65,6 +73,10 @@ func (p *PluginService) Call(operator string, function string, args string) {
 		go handleListSites(operator)
 	case "generate_attack":
 		go handleGenerateAttack(operator, args)
+	case "get_gitlab_token":
+		go handleGetGitlabToken(operator, args)
+	case "update_gitlab_token":
+		go handleUpdateGitlabToken(operator, args)
 	default:
 		sendError(operator, "Unknown function: "+function)
 	}
@@ -82,4 +94,15 @@ func broadcast(payload any) {
 
 func sendError(operator string, msg string) {
 	send(operator, map[string]string{"action": "error", "message": msg})
+}
+
+func deriveAES256Key(passphrase string, salt []byte) ([]byte, error) {
+	if strings.TrimSpace(passphrase) == "" {
+		return nil, fmt.Errorf("passphrase cannot be empty")
+	}
+	if len(salt) == 0 {
+		return nil, fmt.Errorf("salt cannot be empty")
+	}
+	// PBKDF2-HMAC-SHA256, 600k iterations, 32 bytes (AES-256)
+	return pbkdf2.Key([]byte(passphrase), salt, 600000, 32, sha256.New), nil
 }

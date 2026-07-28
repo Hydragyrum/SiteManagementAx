@@ -2,6 +2,9 @@ package main
 
 import (
 	"bytes"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
@@ -19,6 +22,11 @@ import (
 	"time"
 )
 
+const (
+	SiteTypeDefault = 0
+	SiteTypeGitLab  = 1
+)
+
 type HostedSite struct {
 	ID          string `json:"id"`
 	URI         string `json:"uri"`
@@ -33,6 +41,7 @@ type HostedSite struct {
 	CreatedBy   string `json:"created_by"`
 	CreatedAt   int64  `json:"created_at"`
 	Downloads   int    `json:"downloads"`
+	Type        int    `json:"type"`
 }
 
 func (s *HostedSite) SiteKey() string {
@@ -181,9 +190,11 @@ func (sm *SiteManager) RestoreAll() error {
 			continue
 		}
 
-		if _, err := Pool.GetOrStart(site.Host, site.Port, site.SSL); err != nil {
-			fmt.Printf("[FileHost] WARNING: failed to start server for %s: %v\n", site.SiteKey(), err)
-			continue
+		if site.Type == SiteTypeDefault {
+			if _, err := Pool.GetOrStart(site.Host, site.Port, site.SSL); err != nil {
+				fmt.Printf("[FileHost] WARNING: failed to start server for %s: %v\n", site.SiteKey(), err)
+				continue
+			}
 		}
 
 		sm.sites[site.SiteKey()] = &site
@@ -305,6 +316,7 @@ func (p *ServerPool) GetOrStart(host string, port int, ssl bool) (*FileServer, e
 		}
 		fs.srv.TLSConfig = &tls.Config{
 			Certificates: []tls.Certificate{cert},
+			MinVersion:   tls.VersionTLS12,
 		}
 		go fs.srv.ListenAndServeTLS("", "")
 	} else {
@@ -365,6 +377,88 @@ func getServerInterfaces() []string {
 func removeSiteInternal(key string) {
 	SiteMgr.Remove(key)
 	SiteMgr.Unpersist(key)
+}
+
+func encryptTokenWithPassAndSalt(passphrase string, token string) (string, error) {
+	if passphrase == "" {
+		return "", fmt.Errorf("token encryption passphrase is not configured")
+	}
+
+	salt := make([]byte, 16)
+	if _, err := rand.Read(salt); err != nil {
+		return "", fmt.Errorf("failed to generate salt: %w", err)
+	}
+
+	key, err := deriveAES256Key(passphrase, salt)
+	if err != nil {
+		return "", fmt.Errorf("failed to derive encryption key: %w", err)
+	}
+
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return "", fmt.Errorf("failed to initialize cipher: %w", err)
+	}
+
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", fmt.Errorf("failed to initialize gcm: %w", err)
+	}
+
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		return "", fmt.Errorf("failed to generate nonce: %w", err)
+	}
+
+	ciphertext := gcm.Seal(nil, nonce, []byte(token), nil)
+	payload := make([]byte, 0, len(salt)+len(nonce)+len(ciphertext))
+	payload = append(payload, salt...)
+	payload = append(payload, nonce...)
+	payload = append(payload, ciphertext...)
+
+	return base64.StdEncoding.EncodeToString(payload), nil
+}
+
+func decryptTokenWithPassAndSalt(passphrase string, encoded string) (string, error) {
+	if strings.TrimSpace(passphrase) == "" {
+		return "", fmt.Errorf("token encryption passphrase is not configured")
+	}
+
+	payload, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return "", fmt.Errorf("invalid encrypted token format: %w", err)
+	}
+
+	const saltSize = 16
+	const gcmNonceSize = 12
+	if len(payload) <= saltSize+gcmNonceSize {
+		return "", fmt.Errorf("encrypted token payload is too short")
+	}
+
+	salt := payload[:saltSize]
+	nonce := payload[saltSize : saltSize+gcmNonceSize]
+	ciphertext := payload[saltSize+gcmNonceSize:]
+
+	key, err := deriveAES256Key(passphrase, salt)
+	if err != nil {
+		return "", fmt.Errorf("failed to derive decryption key: %w", err)
+	}
+
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return "", fmt.Errorf("failed to initialize cipher: %w", err)
+	}
+
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", fmt.Errorf("failed to initialize gcm: %w", err)
+	}
+
+	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to decrypt token")
+	}
+
+	return string(plaintext), nil
 }
 
 type gitlabUploadResponse struct {
@@ -499,6 +593,7 @@ func handleHostFile(operator string, args string) {
 		CreatedBy:   operator,
 		CreatedAt:   time.Now().Unix(),
 		Downloads:   0,
+		Type:        SiteTypeDefault,
 	}
 
 	SiteMgr.Add(site)
@@ -524,6 +619,7 @@ func handleHostFile(operator string, args string) {
 		"created_by":   site.CreatedBy,
 		"created_at":   site.CreatedAt,
 		"url":          site.URL(),
+		"type":         site.Type,
 	})
 }
 
@@ -592,6 +688,7 @@ func handleHostGitlabFile(operator string, args string) {
 		CreatedBy:   operator,
 		CreatedAt:   time.Now().Unix(),
 		Downloads:   0,
+		Type:        SiteTypeGitLab,
 	}
 
 	SiteMgr.Add(site)
@@ -617,6 +714,7 @@ func handleHostGitlabFile(operator string, args string) {
 		"created_by":   site.CreatedBy,
 		"created_at":   site.CreatedAt,
 		"url":          site.URL(),
+		"type":         site.Type,
 	})
 }
 
@@ -702,5 +800,72 @@ func handleListSites(operator string) {
 		"action":     "sites_list",
 		"sites":      siteList,
 		"interfaces": getServerInterfaces(),
+	})
+}
+
+func handleUpdateGitlabToken(operator string, args string) {
+	var req struct {
+		Host        string `json:"host"`
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.Unmarshal([]byte(args), &req); err != nil {
+		sendError(operator, "Invalid args: "+err.Error())
+		return
+	}
+
+	if req.Host == "" || req.AccessToken == "" {
+		sendError(operator, "host and access_token are required")
+		return
+	}
+
+	encryptedToken, err := encryptTokenWithPassAndSalt(TokenEncKeyPass, req.AccessToken)
+	if err != nil {
+		sendError(operator, "Failed to encrypt token: "+err.Error())
+		return
+	}
+
+	//Update if Token exists, otherwise create a new entry
+	if err := Ts.TsExtenderDataSave("FileHost", "gitlab_tokens:"+req.Host+":"+operator, []byte(encryptedToken)); err != nil {
+		sendError(operator, "Failed to store token: "+err.Error())
+		return
+	}
+
+	send(operator, map[string]any{
+		"action": "gitlab_token_updated",
+		"host":   req.Host,
+	})
+}
+
+func handleGetGitlabToken(operator string, args string) {
+	var req struct {
+		Host string `json:"host"`
+	}
+	if err := json.Unmarshal([]byte(args), &req); err != nil {
+		sendError(operator, "Invalid args: "+err.Error())
+		return
+	}
+
+	req.Host = strings.TrimSpace(req.Host)
+	if req.Host == "" {
+		sendError(operator, "host is required")
+		return
+	}
+
+	encryptedToken, err := Ts.TsExtenderDataLoad("FileHost", "gitlab_tokens:"+req.Host+":"+operator)
+	if err != nil {
+		sendError(operator, "No saved token for host")
+		return
+	}
+
+	decryptedToken, err := decryptTokenWithPassAndSalt(TokenEncKeyPass, string(encryptedToken))
+	if err != nil {
+		sendError(operator, "Failed to decrypt token: "+err.Error())
+		return
+	}
+
+	send(operator, map[string]any{
+		"action":       "gitlab_token_value",
+		"host":         req.Host,
+		"access_token": decryptedToken,
 	})
 }

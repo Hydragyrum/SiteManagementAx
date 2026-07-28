@@ -8,6 +8,32 @@ var STATE = {
     interfaces: ["0.0.0.0"],
 };
 
+const SITE_TYPE_DEFAULT = 0;
+const SITE_TYPE_GITLAB = 1;
+
+const HOSTING_TYPE_LABEL_DEFAULT = "Hosted";
+const HOSTING_TYPE_LABEL_GITLAB = "GitLab";
+let HOSTING_TYPE_ITEMS = [];
+HOSTING_TYPE_ITEMS[SITE_TYPE_DEFAULT] = HOSTING_TYPE_LABEL_DEFAULT;
+HOSTING_TYPE_ITEMS[SITE_TYPE_GITLAB] = HOSTING_TYPE_LABEL_GITLAB;
+
+const HOSTING_TYPE_EMOJI_DEFAULT = "🏠";
+const HOSTING_TYPE_EMOJI_GITLAB = "🦊";
+let HOSTING_TYPE_EMOJIS = [];
+HOSTING_TYPE_EMOJIS[SITE_TYPE_DEFAULT] = HOSTING_TYPE_EMOJI_DEFAULT;
+HOSTING_TYPE_EMOJIS[SITE_TYPE_GITLAB] = HOSTING_TYPE_EMOJI_GITLAB;
+
+function validateHostingTypeMapping() {
+    if (SITE_TYPE_DEFAULT === SITE_TYPE_GITLAB) return false;
+    if (SITE_TYPE_DEFAULT < 0 || SITE_TYPE_GITLAB < 0) return false;
+    if (HOSTING_TYPE_ITEMS[SITE_TYPE_DEFAULT] !== HOSTING_TYPE_LABEL_DEFAULT) return false;
+    if (HOSTING_TYPE_ITEMS[SITE_TYPE_GITLAB] !== HOSTING_TYPE_LABEL_GITLAB) return false;
+    for (let i = 0; i < HOSTING_TYPE_ITEMS.length; i++) {
+        if (!HOSTING_TYPE_ITEMS[i]) return false;
+    }
+    return true;
+}
+
 var CONTENT_TYPES = [
     "application/octet-stream",
     "text/html",
@@ -160,9 +186,10 @@ function data_handler(data) {
                 created_at:   r.created_at,
                 downloads:    0,
                 url:          r.url,
+                type:         r.type,
             });
             refreshSiteTable();
-            ax.show_message("File Hosted", "URL: " + r.url + "\nSize: " + ax.format_size(r.file_size) + "\nContent-Type: " + r.content_type + (r.one_shot ? "\nOne-shot: Yes" : ""));
+            ax.show_message("File Hosted", "Type: " + HOSTING_TYPE_ITEMS[r.type] + "\nURL: " + r.url + "\nSize: " + ax.format_size(r.file_size) + "\nContent-Type: " + r.content_type + (r.one_shot ? "\nOne-shot: Yes" : ""));
             break;
 
         case "site_removed":
@@ -191,6 +218,15 @@ function data_handler(data) {
             }
             break;
 
+        case "gitlab_token_value":
+            if (W.gitlabTokenInput && W.gitlabHostInput) {
+                let currentHost = W.gitlabHostInput.text();
+                if (currentHost === r.host) {
+                    W.gitlabTokenInput.setText(r.access_token || "");
+                }
+            }
+            break;
+
         case "error":
             ax.show_message("FileHost Error", r.message || "Unknown error");
             break;
@@ -199,7 +235,6 @@ function data_handler(data) {
 
 // ── Host File Dialog ─────────────────────────────────────────────────────────
 function getHostedFileParams(container) {
-    ax.log("Generating Hosted Front");
     let labelURI  = form.create_label("URI Path:");
     let textURI   = form.create_textline("/hosted/payload.bin");
     container.put("hosted_uri", textURI);
@@ -255,13 +290,14 @@ function getHostedFileParams(container) {
 }
 
 function getGitlabParams(container) {
-    ax.log("Generating Gitlab Front");
     let labelHost  = form.create_label("GitLab Host:");
     let textHost   = form.create_textline("gitlab.com");
+    W.gitlabHostInput = textHost;
     container.put("gitlab_host", textHost);
 
     let labelToken = form.create_label("Access Token:");
     let textToken  = form.create_textline("");
+    W.gitlabTokenInput = textToken;
     container.put("gitlab_token", textToken);
 
     let labelProject = form.create_label("Project ID:");
@@ -294,11 +330,21 @@ function getGitlabParams(container) {
     let panel = form.create_panel();
     panel.setLayout(grid);
 
+    form.connect(textHost, "textChanged", function(value) {
+        let host = (value || "").trim();
+        if (host.length === 0) {
+            textToken.setText("");
+            return;
+        }
+        ax.service_command("FileHost", "get_gitlab_token", { host: host });
+    });
+
+    ax.service_command("FileHost", "get_gitlab_token", { host: textHost.text() });
+
     return panel;
 }
 
 function showHostFileDialog() {
-    ax.log("Showing Host File Dialog");
     let container = form.create_container();
     let labelFile = form.create_label("File:");
     let filePath  = form.create_label("<i style='color:#888'>No file selected</i>");
@@ -308,13 +354,24 @@ function showHostFileDialog() {
 
     let labelConf = form.create_label("Hosting Type:");
     let comboConf = form.create_combo();
-    comboConf.setItems(["Hosted", "GitLab"]);
+    if (!validateHostingTypeMapping()) {
+        ax.show_message("FileHost", "Invalid hosting type mapping constants. Check SITE_TYPE_* values.");
+        return;
+    }
+    comboConf.setItems(HOSTING_TYPE_ITEMS);
 
-    let hostedFileLayout = getHostedFileParams(container);
-    let gitlabFileLayout = getGitlabParams(container);
+    let pagesByType = [];
+    pagesByType[SITE_TYPE_DEFAULT] = getHostedFileParams(container);
+    pagesByType[SITE_TYPE_GITLAB] = getGitlabParams(container);
+
     let stack = form.create_stack();
-    stack.addPage(hostedFileLayout, "Hosted File Options");
-    stack.addPage(gitlabFileLayout, "GitLab Hosting Options");
+    for (let i = 0; i < HOSTING_TYPE_ITEMS.length; i++) {
+        if (!pagesByType[i]) {
+            ax.show_message("FileHost", "Missing stack page for hosting type index " + i + ".");
+            return;
+        }
+        stack.addPage(pagesByType[i], HOSTING_TYPE_ITEMS[i] + " Options");
+    }
 
     form.connect(comboConf, "currentIndexChanged", function(idx) {
         stack.setCurrentIndex(idx);
@@ -369,9 +426,7 @@ function showHostFileDialog() {
     }
 
     let hostedType = comboConf.currentIndex();
-    // 0 = Hosted File
-    // 1 = GitLab
-    if(hostedType === 0) {
+    if(hostedType === SITE_TYPE_DEFAULT) {
         let uri = container.get("hosted_uri").text();
         if (!uri || uri.length === 0) {
             ax.show_message("FileHost", "URI path is required.");
@@ -388,7 +443,7 @@ function showHostFileDialog() {
             file_b64:     fileB64,
             one_shot:     container.get("hosted_oneShot").isChecked(),
         });
-    } else if(hostedType === 1) {
+    } else if(hostedType === SITE_TYPE_GITLAB) {
         let host = container.get("gitlab_host").text();
         let token = container.get("gitlab_token").text();
         if (!host || host.length === 0 || !token || token.length === 0) {
@@ -404,13 +459,18 @@ function showHostFileDialog() {
             file_name:      container.get("gitlab_fileName").text(),
             file_b64:       fileB64,
         });
+
+        ax.service_command("FileHost", "update_gitlab_tokens", {
+            host:           container.get("gitlab_host").text(),
+            access_token:   container.get("gitlab_token").text(), 
+        });
     }
 }
 
 // ── Site Management Dialog ──────────────────────────────────────────────────
 
 function showManageDialog() {
-    W.siteTable = form.create_table(["URI", "Host", "Port", "SSL", "Content-Type", "Size", "Downloads", "One-Shot", "Created By", "URL"]);
+    W.siteTable = form.create_table(["Type", "URI", "Host", "Port", "SSL", "Content-Type", "Size", "Downloads", "One-Shot", "Created By", "URL"]);
     W.siteTable.setSortingEnabled(true);
     refreshSiteTable();
 
@@ -422,9 +482,10 @@ function showManageDialog() {
         let rows = W.siteTable.selectedRows();
         if (rows.length === 0) return;
         for (let i = 0; i < rows.length; i++) {
-            let uri  = W.siteTable.text(rows[i], 0);
-            let host = W.siteTable.text(rows[i], 1);
-            let port = W.siteTable.text(rows[i], 2);
+            let type = W.siteTable.text(rows[i], 0);
+            let uri  = W.siteTable.text(rows[i], 1);
+            let host = W.siteTable.text(rows[i], 2);
+            let port = W.siteTable.text(rows[i], 3);
             let siteKey = host + ":" + port + uri;
             ax.service_command("FileHost", "remove_site", { site_key: siteKey });
         }
@@ -587,6 +648,11 @@ function showAttacksDialog() {
     W.attackResult = null;
 }
 
+function FinalizeService() {
+    W.gitlabTokenInput = null;
+    W.gitlabHostInput = null;
+}
+
 // ── Refresh Helpers ─────────────────────────────────────────────────────────
 
 function refreshSiteTable() {
@@ -596,6 +662,7 @@ function refreshSiteTable() {
     for (let i = 0; i < STATE.sites.length; i++) {
         let s = STATE.sites[i];
         W.siteTable.addItem([
+            HOSTING_TYPE_EMOJIS[s.type],
             s.uri,
             s.host || "",
             String(s.port || 0),
