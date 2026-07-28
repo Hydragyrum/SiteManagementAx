@@ -198,15 +198,11 @@ function data_handler(data) {
 }
 
 // ── Host File Dialog ─────────────────────────────────────────────────────────
-
-function showHostFileDialog() {
-    let labelFile = form.create_label("File:");
-    let filePath  = form.create_label("<i style='color:#888'>No file selected</i>");
-    let browseBtn = form.create_button("Browse...");
-    var selectedPath = "";
-
+function getHostedFileParams(container) {
+    ax.log("Generating Hosted Front");
     let labelURI  = form.create_label("URI Path:");
     let textURI   = form.create_textline("/hosted/payload.bin");
+    container.put("hosted_uri", textURI);
 
     let labelHost = form.create_label("Bind Host:");
     let comboHost = form.create_combo();
@@ -214,23 +210,115 @@ function showHostFileDialog() {
         comboHost.addItem(STATE.interfaces[idx]);
     }
     comboHost.setCurrentIndex(0);
+    container.put("hosted_bindHost", comboHost);
 
     let labelPort = form.create_label("Port:");
     let spinPort  = form.create_spin();
     spinPort.setRange(1, 65535);
     spinPort.setValue(8080);
+    container.put("hosted_port", spinPort);
 
     let labelCT   = form.create_label("Content-Type:");
     let comboCT   = form.create_combo();
     comboCT.addItems(CONTENT_TYPES);
     comboCT.setCurrentIndex(0);
+    container.put("hosted_contentType", comboCT);
 
     let labelFN   = form.create_label("Download Name:");
     let textFN    = form.create_textline("");
     textFN.setPlaceholder("Optional filename for Content-Disposition");
+    container.put("hosted_fileName", textFN);
 
     let checkSSL     = form.create_check("Enable SSL/TLS");
     let checkOneShot = form.create_check("One-shot (serve once, then remove)");
+    container.put("hosted_ssl", checkSSL);
+    container.put("hosted_oneShot", checkOneShot);
+
+    let grid = form.create_gridlayout();
+    grid.addWidget(labelURI,      0, 0, 1, 1);
+    grid.addWidget(textURI,       0, 1, 1, 3);
+    grid.addWidget(labelHost,     1, 0, 1, 1);
+    grid.addWidget(comboHost,     1, 1, 1, 3);
+    grid.addWidget(labelPort,     2, 0, 1, 1);
+    grid.addWidget(spinPort,      2, 1, 1, 1);
+    grid.addWidget(labelCT,       3, 0, 1, 1);
+    grid.addWidget(comboCT,       3, 1, 1, 3);
+    grid.addWidget(labelFN,       4, 0, 1, 1);
+    grid.addWidget(textFN,        4, 1, 1, 3);
+    grid.addWidget(checkSSL,      5, 0, 1, 2);
+    grid.addWidget(checkOneShot,  5, 2, 1, 2);
+
+    let panel = form.create_panel();
+    panel.setLayout(grid);
+
+    return panel;
+}
+
+function getGitlabParams(container) {
+    ax.log("Generating Gitlab Front");
+    let labelHost  = form.create_label("GitLab Host:");
+    let textHost   = form.create_textline("https://gitlab.com/");
+    container.put("gitlab_host", textHost);
+
+    let labelToken = form.create_label("Access Token:");
+    let textToken  = form.create_textline("");
+    container.put("gitlab_token", textToken);
+
+    let labelProject = form.create_label("Project ID:");
+    let textProject  = form.create_textline("");
+    container.put("gitlab_project", textProject);
+
+    let labelCT   = form.create_label("Content-Type:");
+    let comboCT   = form.create_combo();
+    comboCT.addItems(CONTENT_TYPES);
+    comboCT.setCurrentIndex(0);
+    container.put("gitlab_contentType", comboCT);
+
+    let labelFN   = form.create_label("Download Name:");
+    let textFN    = form.create_textline("");
+    textFN.setPlaceholder("Optional filename for Content-Disposition");
+    container.put("gitlab_fileName", textFN);
+
+    let grid = form.create_gridlayout();
+    grid.addWidget(labelHost,     0, 0, 1, 1);
+    grid.addWidget(textHost,      0, 1, 1, 3);
+    grid.addWidget(labelToken,    1, 0, 1, 1);
+    grid.addWidget(textToken,     1, 1, 1, 3);
+    grid.addWidget(labelProject,  2, 0, 1, 1);
+    grid.addWidget(textProject,   2, 1, 1, 3);
+    grid.addWidget(labelCT,       2, 0, 1, 1);
+    grid.addWidget(comboCT,       2, 1, 1, 3);
+    grid.addWidget(labelFN,       3, 0, 1, 1);
+    grid.addWidget(textFN,        3, 1, 1, 3);
+
+    let panel = form.create_panel();
+    panel.setLayout(grid);
+
+    return panel;
+}
+
+function showHostFileDialog() {
+    ax.log("Showing Host File Dialog");
+    let container = form.create_container();
+    let labelFile = form.create_label("File:");
+    let filePath  = form.create_label("<i style='color:#888'>No file selected</i>");
+    let browseBtn = form.create_button("Browse...");
+    var selectedPath = "";
+
+
+    let labelConf = form.create_label("Hosting Type:");
+    let comboConf = form.create_combo();
+    comboConf.setItems(["Hosted", "GitLab"]);
+
+    let hostedFileLayout = getHostedFileParams(container);
+    let gitlabFileLayout = getGitlabParams(container);
+    let stack = form.create_stack();
+    stack.addPage(hostedFileLayout, "Hosted File Options");
+    stack.addPage(gitlabFileLayout, "GitLab Hosting Options");
+
+    form.connect(comboConf, "currentIndexChanged", function(idx) {
+        stack.setCurrentIndex(idx);
+    });
 
     form.connect(browseBtn, "clicked", function() {
         let path = ax.prompt_open_file("Select file to host", "All Files (*)");
@@ -239,13 +327,15 @@ function showHostFileDialog() {
             let basename = ax.file_basename(path);
             filePath.setText(basename + " (" + ax.format_size(ax.file_size(path)) + ")");
 
-            textURI.setText("/hosted/" + basename);
-            textFN.setText(basename);
+            container.get("hosted_uri").setText("/hosted/" + basename);
+            container.get("hosted_fileName").setText(basename);
+            container.get("gitlab_fileName").setText(basename);
 
             let detectedMime = detectMimeType(basename);
             for (let k = 0; k < CONTENT_TYPES.length; k++) {
                 if (CONTENT_TYPES[k] === detectedMime) {
-                    comboCT.setCurrentIndex(k);
+                    container.get("hosted_contentType").setCurrentIndex(k);
+                    container.get("gitlab_contentType").setCurrentIndex(k);
                     break;
                 }
             }
@@ -256,18 +346,9 @@ function showHostFileDialog() {
     grid.addWidget(labelFile,     0, 0, 1, 1);
     grid.addWidget(browseBtn,     0, 1, 1, 1);
     grid.addWidget(filePath,      0, 2, 1, 2);
-    grid.addWidget(labelURI,      1, 0, 1, 1);
-    grid.addWidget(textURI,       1, 1, 1, 3);
-    grid.addWidget(labelHost,     2, 0, 1, 1);
-    grid.addWidget(comboHost,     2, 1, 1, 3);
-    grid.addWidget(labelPort,     3, 0, 1, 1);
-    grid.addWidget(spinPort,      3, 1, 1, 1);
-    grid.addWidget(labelCT,       4, 0, 1, 1);
-    grid.addWidget(comboCT,       4, 1, 1, 3);
-    grid.addWidget(labelFN,       5, 0, 1, 1);
-    grid.addWidget(textFN,        5, 1, 1, 3);
-    grid.addWidget(checkSSL,      6, 0, 1, 2);
-    grid.addWidget(checkOneShot,  6, 2, 1, 2);
+    grid.addWidget(labelConf,     1, 0, 1, 1);
+    grid.addWidget(comboConf,     1, 1, 1, 3);
+    grid.addWidget(stack,         2, 0, 1, 4);
 
     let dialog = form.create_dialog("Host File");
     dialog.setSize(600, 300);
@@ -287,22 +368,43 @@ function showHostFileDialog() {
         return;
     }
 
-    let uri = textURI.text();
-    if (!uri || uri.length === 0) {
-        ax.show_message("FileHost", "URI path is required.");
-        return;
-    }
+    let hostedType = comboConf.currentIndex();
+    // 0 = Hosted File
+    // 1 = GitLab
+    if(hostedType === 0) {
+        let uri = container.get("hosted_uri").text();
+        if (!uri || uri.length === 0) {
+            ax.show_message("FileHost", "URI path is required.");
+            return;
+        }
 
-    ax.service_command("FileHost", "host_file", {
-        uri:          uri,
-        host:         comboHost.currentText(),
-        port:         spinPort.value(),
-        ssl:          checkSSL.isChecked(),
-        content_type: comboCT.currentText(),
-        file_name:    textFN.text(),
-        file_b64:     fileB64,
-        one_shot:     checkOneShot.isChecked(),
-    });
+        ax.service_command("FileHost", "host_file", {
+            uri:          uri,
+            host:         container.get("hosted_bindHost").currentText(),
+            port:         container.get("hosted_port").value(),
+            ssl:          container.get("hosted_ssl").isChecked(),
+            content_type: container.get("hosted_contentType").currentText(),
+            file_name:    container.get("hosted_fileName").text(),
+            file_b64:     fileB64,
+            one_shot:     container.get("hosted_oneShot").isChecked(),
+        });
+    } else if(hostedType === 1) {
+        let host = container.get("gitlab_host").text();
+        let token = container.get("gitlab_token").text();
+        if (!host || host.length === 0 || !token || token.length === 0) {
+            ax.show_message("FileHost", "GitLab host and access token are required.");
+            return;
+        }
+
+        ax.service_command("FileHost", "host_gitlab_file", {
+            gitlab_host:  host,
+            access_token: token,
+            project: container.get("gitlab_project").text(),
+            content_type: container.get("gitlab_contentType").currentText(),
+            file_name:    container.get("gitlab_fileName").text(),
+            file_b64:     fileB64,
+        });
+    }
 }
 
 // ── Site Management Dialog ──────────────────────────────────────────────────
