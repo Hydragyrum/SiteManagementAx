@@ -264,6 +264,10 @@ function getGitlabParams(container) {
     let textToken  = form.create_textline("");
     container.put("gitlab_token", textToken);
 
+    let labelProject = form.create_label("Project ID:");
+    let textProject  = form.create_textline("");
+    container.put("gitlab_project", textProject);
+
     let labelCT   = form.create_label("Content-Type:");
     let comboCT   = form.create_combo();
     comboCT.addItems(CONTENT_TYPES);
@@ -280,6 +284,8 @@ function getGitlabParams(container) {
     grid.addWidget(textHost,      0, 1, 1, 3);
     grid.addWidget(labelToken,    1, 0, 1, 1);
     grid.addWidget(textToken,     1, 1, 1, 3);
+    grid.addWidget(labelProject,  2, 0, 1, 1);
+    grid.addWidget(textProject,   2, 1, 1, 3);
     grid.addWidget(labelCT,       2, 0, 1, 1);
     grid.addWidget(comboCT,       2, 1, 1, 3);
     grid.addWidget(labelFN,       3, 0, 1, 1);
@@ -393,6 +399,7 @@ function showHostFileDialog() {
         ax.service_command("FileHost", "host_gitlab_file", {
             gitlab_host:  host,
             access_token: token,
+            project: container.get("gitlab_project").text(),
             content_type: container.get("gitlab_contentType").currentText(),
             file_name:    container.get("gitlab_fileName").text(),
             file_b64:     fileB64,
