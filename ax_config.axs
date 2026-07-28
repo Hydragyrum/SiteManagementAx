@@ -6,6 +6,7 @@ var W = {};
 var STATE = {
     sites:      [],
     interfaces: ["0.0.0.0"],
+    discord_token: "",
 };
 
 var CONTENT_TYPES = [
@@ -201,7 +202,7 @@ function data_handler(data) {
 function getHostedFileParams(container) {
     let labelURI  = form.create_label("URI Path:");
     let textURI   = form.create_textline("/hosted/payload.bin");
-    container.put("uri", textURI);
+    container.put("hosted_uri", textURI);
 
     let labelHost = form.create_label("Bind Host:");
     let comboHost = form.create_combo();
@@ -209,29 +210,29 @@ function getHostedFileParams(container) {
         comboHost.addItem(STATE.interfaces[idx]);
     }
     comboHost.setCurrentIndex(0);
-    container.put("bindHost", comboHost);
+    container.put("hosted_bindHost", comboHost);
 
     let labelPort = form.create_label("Port:");
     let spinPort  = form.create_spin();
     spinPort.setRange(1, 65535);
     spinPort.setValue(8080);
-    container.put("port", spinPort);
+    container.put("hosted_port", spinPort);
 
     let labelCT   = form.create_label("Content-Type:");
     let comboCT   = form.create_combo();
     comboCT.addItems(CONTENT_TYPES);
     comboCT.setCurrentIndex(0);
-    container.put("contentType", comboCT);
+    container.put("hosted_contentType", comboCT);
 
     let labelFN   = form.create_label("Download Name:");
     let textFN    = form.create_textline("");
     textFN.setPlaceholder("Optional filename for Content-Disposition");
-    container.put("fileName", textFN);
+    container.put("hosted_fileName", textFN);
 
     let checkSSL     = form.create_check("Enable SSL/TLS");
     let checkOneShot = form.create_check("One-shot (serve once, then remove)");
-    container.put("ssl", checkSSL);
-    container.put("oneShot", checkOneShot);
+    container.put("hosted_ssl", checkSSL);
+    container.put("hosted_oneShot", checkOneShot);
 
     let grid = form.create_gridlayout();
     grid.addWidget(labelURI,      0, 0, 1, 1);
@@ -246,6 +247,15 @@ function getHostedFileParams(container) {
     grid.addWidget(textFN,        4, 1, 1, 3);
     grid.addWidget(checkSSL,      5, 0, 1, 2);
     grid.addWidget(checkOneShot,  5, 2, 1, 2);
+
+    let panel = form.create_panel();
+    panel.setLayout(grid);
+
+    return panel;
+}
+
+function getDiscordParams(container) {
+    let grid = form.create_gridlayout();
 
     let panel = form.create_panel();
     panel.setLayout(grid);
@@ -283,13 +293,13 @@ function showHostFileDialog() {
             let basename = ax.file_basename(path);
             filePath.setText(basename + " (" + ax.format_size(ax.file_size(path)) + ")");
 
-            container.get("uri").setText("/hosted/" + basename);
-            container.get("fileName").setText(basename);
+            container.get("hosted_uri").setText("/hosted/" + basename);
+            container.get("hosted_fileName").setText(basename);
 
             let detectedMime = detectMimeType(basename);
             for (let k = 0; k < CONTENT_TYPES.length; k++) {
                 if (CONTENT_TYPES[k] === detectedMime) {
-                    container.get("contentType").setCurrentIndex(k);
+                    container.get("hosted_contentType").setCurrentIndex(k);
                     break;
                 }
             }
@@ -330,13 +340,13 @@ function showHostFileDialog() {
 
     ax.service_command("FileHost", "host_file", {
         uri:          uri,
-        host:         container.get("bindHost").currentText(),
-        port:         container.get("port").value(),
-        ssl:          container.get("ssl").isChecked(),
-        content_type: container.get("contentType").currentText(),
-        file_name:    container.get("fileName").text(),
+        host:         container.get("hosted_bindHost").currentText(),
+        port:         container.get("hosted_port").value(),
+        ssl:          container.get("hosted_ssl").isChecked(),
+        content_type: container.get("hosted_contentType").currentText(),
+        file_name:    container.get("hosted_fileName").text(),
         file_b64:     fileB64,
-        one_shot:     container.get("oneShot").isChecked(),
+        one_shot:     container.get("hosted_oneShot").isChecked(),
     });
 }
 
