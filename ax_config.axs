@@ -257,7 +257,7 @@ function getHostedFileParams(container) {
 function getGitlabParams(container) {
     ax.log("Generating Gitlab Front");
     let labelHost  = form.create_label("GitLab Host:");
-    let textHost   = form.create_textline("https://gitlab.com/");
+    let textHost   = form.create_textline("gitlab.com");
     container.put("gitlab_host", textHost);
 
     let labelToken = form.create_label("Access Token:");
@@ -286,10 +286,10 @@ function getGitlabParams(container) {
     grid.addWidget(textToken,     1, 1, 1, 3);
     grid.addWidget(labelProject,  2, 0, 1, 1);
     grid.addWidget(textProject,   2, 1, 1, 3);
-    grid.addWidget(labelCT,       2, 0, 1, 1);
-    grid.addWidget(comboCT,       2, 1, 1, 3);
-    grid.addWidget(labelFN,       3, 0, 1, 1);
-    grid.addWidget(textFN,        3, 1, 1, 3);
+    grid.addWidget(labelCT,       3, 0, 1, 1);
+    grid.addWidget(comboCT,       3, 1, 1, 3);
+    grid.addWidget(labelFN,       4, 0, 1, 1);
+    grid.addWidget(textFN,        4, 1, 1, 3);
 
     let panel = form.create_panel();
     panel.setLayout(grid);
@@ -397,12 +397,12 @@ function showHostFileDialog() {
         }
 
         ax.service_command("FileHost", "host_gitlab_file", {
-            gitlab_host:  host,
-            access_token: token,
-            project: container.get("gitlab_project").text(),
-            content_type: container.get("gitlab_contentType").currentText(),
-            file_name:    container.get("gitlab_fileName").text(),
-            file_b64:     fileB64,
+            host:           container.get("gitlab_host").text(),
+            access_token:   container.get("gitlab_token").text(),
+            project:        container.get("gitlab_project").text(),
+            content_type:   container.get("gitlab_contentType").currentText(),
+            file_name:      container.get("gitlab_fileName").text(),
+            file_b64:       fileB64,
         });
     }
 }

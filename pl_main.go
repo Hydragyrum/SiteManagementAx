@@ -57,6 +57,8 @@ func (p *PluginService) Call(operator string, function string, args string) {
 	switch function {
 	case "host_file":
 		go handleHostFile(operator, args)
+	case "host_gitlab_file":
+		go handleHostGitlabFile(operator, args)
 	case "remove_site":
 		go handleRemoveSite(operator, args)
 	case "list_sites":

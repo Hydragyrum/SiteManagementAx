@@ -6,9 +6,12 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"mime"
+	"mime/multipart"
 	"net"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -364,6 +367,68 @@ func removeSiteInternal(key string) {
 	SiteMgr.Unpersist(key)
 }
 
+type gitlabUploadResponse struct {
+	ID       int64  `json:"id"`
+	Alt      string `json:"alt"`
+	URL      string `json:"url"`
+	FullPath string `json:"full_path"`
+	Markdown string `json:"markdown"`
+}
+
+func uploadFileToGitLab(host string, accessToken string, project string, fileName string, fileBytes []byte) (*gitlabUploadResponse, int, error) {
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("file", fileName)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to build multipart upload: %w", err)
+	}
+	if _, err := part.Write(fileBytes); err != nil {
+		return nil, 0, fmt.Errorf("failed to write multipart payload: %w", err)
+	}
+	if err := writer.Close(); err != nil {
+		return nil, 0, fmt.Errorf("failed to finalize multipart payload: %w", err)
+	}
+
+	baseHost := strings.TrimSpace(host)
+	if !strings.HasPrefix(baseHost, "http://") && !strings.HasPrefix(baseHost, "https://") {
+		baseHost = "https://" + baseHost
+	}
+	baseHost = strings.TrimRight(baseHost, "/")
+
+	projectEscaped := url.PathEscape(strings.TrimSpace(project))
+	uploadURL := fmt.Sprintf("%s/api/v4/projects/%s/uploads", baseHost, projectEscaped)
+
+	httpReq, err := http.NewRequest(http.MethodPost, uploadURL, &body)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to create request: %w", err)
+	}
+	httpReq.Header.Set("PRIVATE-TOKEN", accessToken)
+	httpReq.Header.Set("Content-Type", writer.FormDataContentType())
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return nil, 0, fmt.Errorf("gitlab upload request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, resp.StatusCode, fmt.Errorf("failed reading gitlab response: %w", err)
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, resp.StatusCode, fmt.Errorf("gitlab upload failed: %s", strings.TrimSpace(string(respBody)))
+	}
+
+	var uploadResp gitlabUploadResponse
+	if err := json.Unmarshal(respBody, &uploadResp); err != nil {
+		return nil, resp.StatusCode, fmt.Errorf("gitlab upload succeeded but response JSON was invalid: %w", err)
+	}
+
+	return &uploadResp, resp.StatusCode, nil
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 //  Handlers
 // ════════════════════════════════════════════════════════════════════════════
@@ -444,6 +509,99 @@ func handleHostFile(operator string, args string) {
 
 	fmt.Printf("[FileHost] Hosted: %s (%s, %d bytes, one-shot=%v) by %s\n",
 		site.SiteKey(), site.ContentType, site.FileSize, site.OneShot, operator)
+
+	broadcast(map[string]any{
+		"action":       "site_added",
+		"site_key":     site.SiteKey(),
+		"uri":          site.URI,
+		"host":         site.Host,
+		"port":         site.Port,
+		"ssl":          site.SSL,
+		"content_type": site.ContentType,
+		"file_name":    site.FileName,
+		"file_size":    site.FileSize,
+		"one_shot":     site.OneShot,
+		"created_by":   site.CreatedBy,
+		"created_at":   site.CreatedAt,
+		"url":          site.URL(),
+	})
+}
+
+func handleHostGitlabFile(operator string, args string) {
+	var req struct {
+		Host        string `json:"host"`
+		AccessToken string `json:"access_token"`
+		Project     string `json:"project"`
+		ContentType string `json:"content_type"`
+		FileName    string `json:"file_name"`
+		FileB64     string `json:"file_b64"`
+	}
+
+	if err := json.Unmarshal([]byte(args), &req); err != nil {
+		sendError(operator, "Invalid args: "+err.Error())
+		return
+	}
+
+	if req.Host == "" || req.AccessToken == "" || req.Project == "" || req.FileB64 == "" {
+		sendError(operator, "host, access_token, project, and file_b64 are required")
+		return
+	}
+
+	if strings.HasPrefix(req.Host, "http://") || strings.HasPrefix(req.Host, "https://") {
+		sendError(operator, "host should not include http:// or https://")
+		return
+	}
+
+	if req.ContentType == "" {
+		ext := filepath.Ext(req.FileName)
+		if ext != "" {
+			req.ContentType = mime.TypeByExtension(ext)
+		}
+		if req.ContentType == "" {
+			req.ContentType = "application/octet-stream"
+		}
+	}
+
+	fileBytes, err := base64.StdEncoding.DecodeString(req.FileB64)
+	if err != nil {
+		sendError(operator, "Invalid base64 file content: "+err.Error())
+		return
+	}
+
+	if req.FileName == "" {
+		req.FileName = "upload.bin"
+	}
+
+	uploadResp, statusCode, err := uploadFileToGitLab(req.Host, req.AccessToken, req.Project, req.FileName, fileBytes)
+	if err != nil {
+		sendError(operator, fmt.Sprintf("GitLab upload failed (%d): %s", statusCode, err.Error()))
+		return
+	}
+
+	site := &HostedSite{
+		ID:          fmt.Sprintf("%d", time.Now().UnixNano()),
+		URI:         uploadResp.FullPath,
+		Host:        req.Host,
+		Port:        443,
+		SSL:         true,
+		ContentType: req.ContentType,
+		FileName:    req.FileName,
+		FileSize:    len(fileBytes),
+		FileB64:     req.FileB64,
+		OneShot:     false,
+		CreatedBy:   operator,
+		CreatedAt:   time.Now().Unix(),
+		Downloads:   0,
+	}
+
+	SiteMgr.Add(site)
+
+	if err := SiteMgr.Persist(site); err != nil {
+		fmt.Printf("[FileHost] WARNING: failed to persist site %s: %v\n", site.SiteKey(), err)
+	}
+
+	fmt.Printf("[FileHost] Hosted GitLab file: %s (%s, %d bytes) by %s\n",
+		site.SiteKey(), site.ContentType, site.FileSize, operator)
 
 	broadcast(map[string]any{
 		"action":       "site_added",
