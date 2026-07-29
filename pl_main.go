@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/pbkdf2"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -21,11 +23,12 @@ type Teamserver interface {
 type PluginService struct{}
 
 var (
-	Ts        Teamserver
-	ModuleDir string
-	SSLCert   string
-	SSLKey    string
-	SiteMgr   *SiteManager
+	Ts              Teamserver
+	ModuleDir       string
+	SSLCert         string
+	SSLKey          string
+	SiteMgr         *SiteManager
+	TokenEncKeyPass string
 )
 
 func InitPlugin(ts any, moduleDir string, serviceConfig string) adaptix.PluginService {
@@ -33,14 +36,18 @@ func InitPlugin(ts any, moduleDir string, serviceConfig string) adaptix.PluginSe
 	ModuleDir = moduleDir
 
 	for _, line := range strings.Split(serviceConfig, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "ssl_cert:") {
-			val := strings.TrimSpace(strings.TrimPrefix(line, "ssl_cert:"))
-			SSLCert = strings.Trim(val, `"'`)
+		key, value, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
 		}
-		if strings.HasPrefix(line, "ssl_key:") {
-			val := strings.TrimSpace(strings.TrimPrefix(line, "ssl_key:"))
-			SSLKey = strings.Trim(val, `"'`)
+		value = strings.Trim(strings.TrimSpace(value), `"'`)
+		switch strings.TrimSpace(key) {
+		case "ssl_cert":
+			SSLCert = value
+		case "ssl_key":
+			SSLKey = value
+		case "token_enc_key":
+			TokenEncKeyPass = value
 		}
 	}
 
@@ -57,12 +64,18 @@ func (p *PluginService) Call(operator string, function string, args string) {
 	switch function {
 	case "host_file":
 		go handleHostFile(operator, args)
+	case "host_gitlab_file":
+		go handleHostGitlabFile(operator, args)
 	case "remove_site":
 		go handleRemoveSite(operator, args)
 	case "list_sites":
 		go handleListSites(operator)
 	case "generate_attack":
 		go handleGenerateAttack(operator, args)
+	case "get_gitlab_token":
+		go handleGetGitlabToken(operator, args)
+	case "update_gitlab_token":
+		go handleUpdateGitlabToken(operator, args)
 	default:
 		sendError(operator, "Unknown function: "+function)
 	}
@@ -80,4 +93,15 @@ func broadcast(payload any) {
 
 func sendError(operator string, msg string) {
 	send(operator, map[string]string{"action": "error", "message": msg})
+}
+
+func deriveAES256Key(passphrase string, salt []byte) ([]byte, error) {
+	if strings.TrimSpace(passphrase) == "" {
+		return nil, fmt.Errorf("passphrase cannot be empty")
+	}
+	if len(salt) == 0 {
+		return nil, fmt.Errorf("salt cannot be empty")
+	}
+	// PBKDF2-HMAC-SHA256, 600k iterations, 32 bytes (AES-256)
+	return pbkdf2.Key(sha256.New, passphrase, salt, 600000, 32)
 }
