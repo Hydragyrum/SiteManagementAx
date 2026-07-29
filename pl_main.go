@@ -1,12 +1,11 @@
 package main
 
 import (
+	"crypto/pbkdf2"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"strings"
-
-	"golang.org/x/crypto/pbkdf2"
 
 	adaptix "github.com/Adaptix-Framework/axc2"
 )
@@ -104,5 +103,5 @@ func deriveAES256Key(passphrase string, salt []byte) ([]byte, error) {
 		return nil, fmt.Errorf("salt cannot be empty")
 	}
 	// PBKDF2-HMAC-SHA256, 600k iterations, 32 bytes (AES-256)
-	return pbkdf2.Key([]byte(passphrase), salt, 600000, 32, sha256.New), nil
+	return pbkdf2.Key(sha256.New, passphrase, salt, 600000, 32)
 }

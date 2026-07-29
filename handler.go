@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -25,7 +26,10 @@ import (
 const (
 	SiteTypeDefault = 0
 	SiteTypeGitLab  = 1
+	tokenSaltSize   = 16
 )
+
+var errGitLabAuthRequired = errors.New("gitlab auth required")
 
 type HostedSite struct {
 	ID          string `json:"id"`
@@ -374,34 +378,50 @@ func getServerInterfaces() []string {
 	return result
 }
 
+func detectContentType(fileName string) string {
+	ext := filepath.Ext(fileName)
+	if ext != "" {
+		if contentType := mime.TypeByExtension(ext); contentType != "" {
+			return contentType
+		}
+	}
+	return "application/octet-stream"
+}
+
 func removeSiteInternal(key string) {
 	SiteMgr.Remove(key)
 	SiteMgr.Unpersist(key)
 }
 
+func newTokenGCM(passphrase string, salt []byte) (cipher.AEAD, error) {
+	key, err := deriveAES256Key(passphrase, salt)
+	if err != nil {
+		return nil, fmt.Errorf("failed to derive encryption key: %w", err)
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize cipher: %w", err)
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize gcm: %w", err)
+	}
+	return gcm, nil
+}
+
 func encryptTokenWithPassAndSalt(passphrase string, token string) (string, error) {
-	if passphrase == "" {
+	if strings.TrimSpace(passphrase) == "" {
 		return "", fmt.Errorf("token encryption passphrase is not configured")
 	}
 
-	salt := make([]byte, 16)
+	salt := make([]byte, tokenSaltSize)
 	if _, err := rand.Read(salt); err != nil {
 		return "", fmt.Errorf("failed to generate salt: %w", err)
 	}
 
-	key, err := deriveAES256Key(passphrase, salt)
+	gcm, err := newTokenGCM(passphrase, salt)
 	if err != nil {
-		return "", fmt.Errorf("failed to derive encryption key: %w", err)
-	}
-
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return "", fmt.Errorf("failed to initialize cipher: %w", err)
-	}
-
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return "", fmt.Errorf("failed to initialize gcm: %w", err)
+		return "", err
 	}
 
 	nonce := make([]byte, gcm.NonceSize())
@@ -427,31 +447,22 @@ func decryptTokenWithPassAndSalt(passphrase string, encoded string) (string, err
 	if err != nil {
 		return "", fmt.Errorf("invalid encrypted token format: %w", err)
 	}
-
-	const saltSize = 16
-	const gcmNonceSize = 12
-	if len(payload) <= saltSize+gcmNonceSize {
+	if len(payload) <= tokenSaltSize {
 		return "", fmt.Errorf("encrypted token payload is too short")
 	}
 
-	salt := payload[:saltSize]
-	nonce := payload[saltSize : saltSize+gcmNonceSize]
-	ciphertext := payload[saltSize+gcmNonceSize:]
-
-	key, err := deriveAES256Key(passphrase, salt)
+	salt := payload[:tokenSaltSize]
+	gcm, err := newTokenGCM(passphrase, salt)
 	if err != nil {
-		return "", fmt.Errorf("failed to derive decryption key: %w", err)
+		return "", err
 	}
 
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return "", fmt.Errorf("failed to initialize cipher: %w", err)
+	nonceSize := gcm.NonceSize()
+	if len(payload) <= tokenSaltSize+nonceSize {
+		return "", fmt.Errorf("encrypted token payload is too short")
 	}
-
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return "", fmt.Errorf("failed to initialize gcm: %w", err)
-	}
+	nonce := payload[tokenSaltSize : tokenSaltSize+nonceSize]
+	ciphertext := payload[tokenSaltSize+nonceSize:]
 
 	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
 	if err != nil {
@@ -523,6 +534,105 @@ func uploadFileToGitLab(host string, accessToken string, project string, fileNam
 	return &uploadResp, resp.StatusCode, nil
 }
 
+func notifyGitLabTokenRequired(operator string, host string, statusCode int, command string) {
+	send(operator, map[string]any{
+		"action":  "gitlab_token_required",
+		"host":    strings.TrimSpace(host),
+		"status":  statusCode,
+		"command": command,
+	})
+}
+
+func parseGitLabUploadPath(fullPath string) (project string, secret string, fileName string, err error) {
+	parts := strings.Split(strings.Trim(strings.TrimSpace(fullPath), "/"), "/")
+	// Expected: /-/project/<project>/uploads/<secret>/<filename>
+	if len(parts) != 6 || parts[0] != "-" || parts[1] != "project" || parts[3] != "uploads" {
+		return "", "", "", fmt.Errorf("invalid gitlab upload path: %s", fullPath)
+	}
+
+	project, err = url.PathUnescape(parts[2])
+	if err != nil {
+		project = parts[2]
+	}
+	secret, err = url.PathUnescape(parts[4])
+	if err != nil {
+		secret = parts[4]
+	}
+	fileName, err = url.PathUnescape(parts[5])
+	if err != nil {
+		fileName = parts[5]
+	}
+	return project, secret, fileName, nil
+}
+
+func removeSiteFromGitLab(site *HostedSite, operator string) error {
+	baseHost := strings.TrimSpace(site.Host)
+	if !strings.HasPrefix(baseHost, "http://") && !strings.HasPrefix(baseHost, "https://") {
+		baseHost = "https://" + baseHost
+	}
+	baseHost = strings.TrimRight(baseHost, "/")
+
+	project, secret, fileName, err := parseGitLabUploadPath(site.URI)
+	if err != nil {
+		fmt.Printf("[FileHost] WARNING: cannot remove GitLab site %s - %v\n", site.SiteKey(), err)
+		return err
+	}
+	tokenKey := "gitlab_tokens:" + site.Host + ":" + operator
+	fmt.Printf("[FileHost] GitLab remove attempt site=%s operator=%s host=%s project=%s file=%s token_key=%s\n",
+		site.SiteKey(), operator, site.Host, project, fileName, tokenKey)
+
+	tokenData, err := Ts.TsExtenderDataLoad("FileHost", tokenKey)
+	if err != nil || len(tokenData) == 0 {
+		fmt.Printf("[FileHost] WARNING: cannot remove GitLab site %s - no token found for user %s\n", site.SiteKey(), operator)
+		return fmt.Errorf("no gitlab token found")
+	}
+	fmt.Printf("[FileHost] GitLab remove token loaded key=%s bytes=%d\n", tokenKey, len(tokenData))
+
+	decryptedToken, err := decryptTokenWithPassAndSalt(TokenEncKeyPass, string(tokenData))
+	if err != nil {
+		fmt.Printf("[FileHost] WARNING: cannot remove GitLab site %s - failed to decrypt token for user %s: %v\n", site.SiteKey(), operator, err)
+		return fmt.Errorf("failed to decrypt gitlab token")
+	}
+
+	deleteURL := fmt.Sprintf(
+		"%s/api/v4/projects/%s/uploads/%s/%s",
+		baseHost,
+		url.PathEscape(project),
+		url.PathEscape(secret),
+		url.PathEscape(fileName),
+	)
+	fmt.Printf("[FileHost] GitLab remove request url=%s\n", deleteURL)
+
+	httpReq, err := http.NewRequest(http.MethodDelete, deleteURL, nil)
+	if err != nil {
+		fmt.Printf("[FileHost] WARNING: cannot remove GitLab site %s - failed to create request: %v\n", site.SiteKey(), err)
+		return fmt.Errorf("failed to create delete request")
+	}
+	httpReq.Header.Set("PRIVATE-TOKEN", decryptedToken)
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		fmt.Printf("[FileHost] WARNING: cannot remove GitLab site %s - request failed: %v\n", site.SiteKey(), err)
+		return fmt.Errorf("gitlab delete request failed")
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		respBody, _ := io.ReadAll(resp.Body)
+		fmt.Printf("[FileHost] GitLab remove response status=%d site=%s\n", resp.StatusCode, site.SiteKey())
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			notifyGitLabTokenRequired(operator, site.Host, resp.StatusCode, "remove_site")
+			return errGitLabAuthRequired
+		}
+		fmt.Printf("[FileHost] WARNING: cannot remove GitLab site %s - request failed with status %d: %s\n", site.SiteKey(), resp.StatusCode, strings.TrimSpace(string(respBody)))
+		return fmt.Errorf("gitlab delete failed with status %d", resp.StatusCode)
+	}
+
+	fmt.Printf("[FileHost] Successfully removed GitLab site %s by %s\n", site.SiteKey(), operator)
+	return nil
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 //  Handlers
 // ════════════════════════════════════════════════════════════════════════════
@@ -553,13 +663,7 @@ func handleHostFile(operator string, args string) {
 	}
 
 	if req.ContentType == "" {
-		ext := filepath.Ext(req.FileName)
-		if ext != "" {
-			req.ContentType = mime.TypeByExtension(ext)
-		}
-		if req.ContentType == "" {
-			req.ContentType = "application/octet-stream"
-		}
+		req.ContentType = detectContentType(req.FileName)
 	}
 
 	siteKey := MakeSiteKey(req.Host, req.Port, req.URI)
@@ -649,13 +753,7 @@ func handleHostGitlabFile(operator string, args string) {
 	}
 
 	if req.ContentType == "" {
-		ext := filepath.Ext(req.FileName)
-		if ext != "" {
-			req.ContentType = mime.TypeByExtension(ext)
-		}
-		if req.ContentType == "" {
-			req.ContentType = "application/octet-stream"
-		}
+		req.ContentType = detectContentType(req.FileName)
 	}
 
 	fileBytes, err := base64.StdEncoding.DecodeString(req.FileB64)
@@ -670,6 +768,10 @@ func handleHostGitlabFile(operator string, args string) {
 
 	uploadResp, statusCode, err := uploadFileToGitLab(req.Host, req.AccessToken, req.Project, req.FileName, fileBytes)
 	if err != nil {
+		if statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden {
+			notifyGitLabTokenRequired(operator, req.Host, statusCode, "host_gitlab_file")
+			return
+		}
 		sendError(operator, fmt.Sprintf("GitLab upload failed (%d): %s", statusCode, err.Error()))
 		return
 	}
@@ -734,8 +836,23 @@ func handleRemoveSite(operator string, args string) {
 	}
 
 	host, port := site.Host, site.Port
+	switch site.Type {
+	case SiteTypeDefault:
+		maybeStopServer(host, port)
+	case SiteTypeGitLab:
+		if err := removeSiteFromGitLab(site, operator); err != nil {
+			if errors.Is(err, errGitLabAuthRequired) {
+				return
+			}
+			sendError(operator, "Failed to remove GitLab hosted file; saved site kept")
+			return
+		}
+	default:
+		fmt.Printf("[FileHost] WARNING: unknown site type %d for %s\n", site.Type, req.SiteKey)
+		sendError(operator, "Unknown site type")
+		return
+	}
 	removeSiteInternal(req.SiteKey)
-	maybeStopServer(host, port)
 	fmt.Printf("[FileHost] Removed: %s by %s\n", req.SiteKey, operator)
 
 	broadcast(map[string]any{
@@ -793,6 +910,7 @@ func handleListSites(operator string) {
 			"created_at":   s.CreatedAt,
 			"downloads":    s.Downloads,
 			"url":          s.URL(),
+			"type":         s.Type,
 		})
 	}
 
@@ -813,6 +931,7 @@ func handleUpdateGitlabToken(operator string, args string) {
 		return
 	}
 
+	req.Host = strings.TrimSpace(req.Host)
 	if req.Host == "" || req.AccessToken == "" {
 		sendError(operator, "host and access_token are required")
 		return
@@ -824,11 +943,13 @@ func handleUpdateGitlabToken(operator string, args string) {
 		return
 	}
 
+	tokenKey := "gitlab_tokens:" + req.Host + ":" + operator
 	//Update if Token exists, otherwise create a new entry
-	if err := Ts.TsExtenderDataSave("FileHost", "gitlab_tokens:"+req.Host+":"+operator, []byte(encryptedToken)); err != nil {
+	if err := Ts.TsExtenderDataSave("FileHost", tokenKey, []byte(encryptedToken)); err != nil {
 		sendError(operator, "Failed to store token: "+err.Error())
 		return
 	}
+	fmt.Printf("[FileHost] GitLab token updated host=%s operator=%s key=%s bytes=%d\n", req.Host, operator, tokenKey, len(encryptedToken))
 
 	send(operator, map[string]any{
 		"action": "gitlab_token_updated",
@@ -851,11 +972,15 @@ func handleGetGitlabToken(operator string, args string) {
 		return
 	}
 
-	encryptedToken, err := Ts.TsExtenderDataLoad("FileHost", "gitlab_tokens:"+req.Host+":"+operator)
+	tokenKey := "gitlab_tokens:" + req.Host + ":" + operator
+	encryptedToken, err := Ts.TsExtenderDataLoad("FileHost", tokenKey)
 	if err != nil {
-		sendError(operator, "No saved token for host")
 		return
 	}
+	if len(encryptedToken) == 0 {
+		return
+	}
+	fmt.Printf("[FileHost] GitLab token read host=%s operator=%s key=%s bytes=%d\n", req.Host, operator, tokenKey, len(encryptedToken))
 
 	decryptedToken, err := decryptTokenWithPassAndSalt(TokenEncKeyPass, string(encryptedToken))
 	if err != nil {

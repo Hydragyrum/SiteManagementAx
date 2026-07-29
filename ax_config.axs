@@ -4,35 +4,23 @@
 
 var W = {};
 var STATE = {
-    sites:      [],
-    interfaces: ["0.0.0.0"],
+    sites:               [],
+    interfaces:          ["0.0.0.0"],
+    pendingGitlabUpload: null,
+    pendingGitlabRemove: null,
+    retryGitlabCommand:  "",
+    latestGitlabTokens:  {},
+    gitlabTokenPromptOpen: false,
 };
 
 const SITE_TYPE_DEFAULT = 0;
 const SITE_TYPE_GITLAB = 1;
 
-const HOSTING_TYPE_LABEL_DEFAULT = "Hosted";
-const HOSTING_TYPE_LABEL_GITLAB = "GitLab";
-let HOSTING_TYPE_ITEMS = [];
-HOSTING_TYPE_ITEMS[SITE_TYPE_DEFAULT] = HOSTING_TYPE_LABEL_DEFAULT;
-HOSTING_TYPE_ITEMS[SITE_TYPE_GITLAB] = HOSTING_TYPE_LABEL_GITLAB;
-
-const HOSTING_TYPE_EMOJI_DEFAULT = "🏠";
-const HOSTING_TYPE_EMOJI_GITLAB = "🦊";
-let HOSTING_TYPE_EMOJIS = [];
-HOSTING_TYPE_EMOJIS[SITE_TYPE_DEFAULT] = HOSTING_TYPE_EMOJI_DEFAULT;
-HOSTING_TYPE_EMOJIS[SITE_TYPE_GITLAB] = HOSTING_TYPE_EMOJI_GITLAB;
-
-function validateHostingTypeMapping() {
-    if (SITE_TYPE_DEFAULT === SITE_TYPE_GITLAB) return false;
-    if (SITE_TYPE_DEFAULT < 0 || SITE_TYPE_GITLAB < 0) return false;
-    if (HOSTING_TYPE_ITEMS[SITE_TYPE_DEFAULT] !== HOSTING_TYPE_LABEL_DEFAULT) return false;
-    if (HOSTING_TYPE_ITEMS[SITE_TYPE_GITLAB] !== HOSTING_TYPE_LABEL_GITLAB) return false;
-    for (let i = 0; i < HOSTING_TYPE_ITEMS.length; i++) {
-        if (!HOSTING_TYPE_ITEMS[i]) return false;
-    }
-    return true;
-}
+const HOSTING_TYPES = [];
+HOSTING_TYPES[SITE_TYPE_DEFAULT] = { label: "Hosted", emoji: "🏠" };
+HOSTING_TYPES[SITE_TYPE_GITLAB] = { label: "GitLab", emoji: "🦊" };
+const HOSTING_TYPE_ITEMS = HOSTING_TYPES.map(function(t) { return t.label; });
+const HOSTING_TYPE_EMOJIS = HOSTING_TYPES.map(function(t) { return t.emoji; });
 
 var CONTENT_TYPES = [
     "application/octet-stream",
@@ -134,6 +122,105 @@ function detectMimeType(filename) {
     return MIME_MAP[ext] || "application/octet-stream";
 }
 
+function getSiteByKey(siteKey) {
+    for (let i = 0; i < STATE.sites.length; i++) {
+        if (STATE.sites[i].site_key === siteKey) {
+            return STATE.sites[i];
+        }
+    }
+    return null;
+}
+
+function setPendingGitlabRetry(command, host, payload) {
+    let pending = {
+        host: (host || "").trim(),
+        payload: payload,
+    };
+    if (command === "host_gitlab_file") {
+        STATE.pendingGitlabUpload = pending;
+    } else if (command === "remove_site") {
+        STATE.pendingGitlabRemove = pending;
+    }
+}
+
+function retryPendingGitlabOperation(host, command) {
+    let cleanHost = (host || "").trim();
+    let pending = null;
+    if (command === "host_gitlab_file") {
+        pending = STATE.pendingGitlabUpload;
+    } else if (command === "remove_site") {
+        pending = STATE.pendingGitlabRemove;
+    }
+    if (!pending || pending.host !== cleanHost) return;
+
+    if (command === "host_gitlab_file") {
+        let latestToken = STATE.latestGitlabTokens[cleanHost];
+        if (latestToken && pending.payload) {
+            pending.payload.access_token = latestToken;
+        }
+    }
+    ax.service_command("FileHost", command, pending.payload);
+
+    if (command === "host_gitlab_file") {
+        STATE.pendingGitlabUpload = null;
+    } else if (command === "remove_site") {
+        STATE.pendingGitlabRemove = null;
+    }
+}
+
+function promptGitlabTokenUpdate(host, statusCode) {
+    if (STATE.gitlabTokenPromptOpen) {
+        return false;
+    }
+    let cleanHost = (host || "").trim();
+    if (cleanHost.length === 0) {
+        return false;
+    }
+    STATE.gitlabTokenPromptOpen = true;
+
+    let title = "GitLab Token Required";
+    let msg = "Authentication failed for " + cleanHost;
+    if (statusCode === 401 || statusCode === 403) {
+        msg += " (HTTP " + statusCode + ")";
+    }
+
+    let label = form.create_label(msg + "\nEnter updated access token:");
+    let tokenInput = form.create_textline("");
+    tokenInput.setPlaceholder("GitLab access token");
+
+    let layout = form.create_vlayout();
+    layout.addWidget(label);
+    layout.addWidget(tokenInput);
+
+    let dialog = form.create_dialog(title);
+    dialog.setLayout(layout);
+    dialog.setButtonsText("Update Token", "Cancel");
+    if (!dialog.exec()) {
+        STATE.gitlabTokenPromptOpen = false;
+        return false;
+    }
+
+    let token = (tokenInput.text() || "").trim();
+    if (token.length === 0) {
+        STATE.gitlabTokenPromptOpen = false;
+        return false;
+    }
+    STATE.latestGitlabTokens[cleanHost] = token;
+    if (W.gitlabHostInput && W.gitlabTokenInput) {
+        let currentHost = (W.gitlabHostInput.text() || "").trim();
+        if (currentHost === cleanHost) {
+            W.gitlabTokenInput.setText(token);
+        }
+    }
+
+    ax.service_command("FileHost", "update_gitlab_token", {
+        host: cleanHost,
+        access_token: token,
+    });
+    STATE.gitlabTokenPromptOpen = false;
+    return true;
+}
+
 // ── Entry ────────────────────────────────────────────────────────────────────
 
 function InitService() {
@@ -188,6 +275,9 @@ function data_handler(data) {
                 url:          r.url,
                 type:         r.type,
             });
+            if (r.type === SITE_TYPE_GITLAB) {
+                STATE.pendingGitlabUpload = null;
+            }
             refreshSiteTable();
             ax.show_message("File Hosted", "Type: " + HOSTING_TYPE_ITEMS[r.type] + "\nURL: " + r.url + "\nSize: " + ax.format_size(r.file_size) + "\nContent-Type: " + r.content_type + (r.one_shot ? "\nOne-shot: Yes" : ""));
             break;
@@ -198,6 +288,9 @@ function data_handler(data) {
                     STATE.sites.splice(i, 1);
                     break;
                 }
+            }
+            if (STATE.pendingGitlabRemove && STATE.pendingGitlabRemove.payload && STATE.pendingGitlabRemove.payload.site_key === r.site_key) {
+                STATE.pendingGitlabRemove = null;
             }
             refreshSiteTable();
             break;
@@ -220,11 +313,23 @@ function data_handler(data) {
 
         case "gitlab_token_value":
             if (W.gitlabTokenInput && W.gitlabHostInput) {
-                let currentHost = W.gitlabHostInput.text();
+                let currentHost = (W.gitlabHostInput.text() || "").trim();
                 if (currentHost === r.host) {
                     W.gitlabTokenInput.setText(r.access_token || "");
                 }
             }
+            break;
+        case "gitlab_token_required":
+            STATE.retryGitlabCommand = r.command || "";
+            if (!promptGitlabTokenUpdate(r.host, r.status)) {
+                STATE.retryGitlabCommand = "";
+            }
+            break;
+        case "gitlab_token_updated":
+            retryPendingGitlabOperation(r.host, STATE.retryGitlabCommand);
+            retryPendingGitlabOperation(r.host, "remove_site");
+            retryPendingGitlabOperation(r.host, "host_gitlab_file");
+            STATE.retryGitlabCommand = "";
             break;
 
         case "error":
@@ -330,16 +435,17 @@ function getGitlabParams(container) {
     let panel = form.create_panel();
     panel.setLayout(grid);
 
-    form.connect(textHost, "textChanged", function(value) {
-        let host = (value || "").trim();
+    form.connect(textHost, "editingFinished", function() {
+        let host = (textHost.text() || "").trim();
+        textHost.setText(host);
+        textToken.setText("");
         if (host.length === 0) {
-            textToken.setText("");
             return;
         }
         ax.service_command("FileHost", "get_gitlab_token", { host: host });
     });
 
-    ax.service_command("FileHost", "get_gitlab_token", { host: textHost.text() });
+    ax.service_command("FileHost", "get_gitlab_token", { host: (textHost.text() || "").trim() });
 
     return panel;
 }
@@ -354,10 +460,6 @@ function showHostFileDialog() {
 
     let labelConf = form.create_label("Hosting Type:");
     let comboConf = form.create_combo();
-    if (!validateHostingTypeMapping()) {
-        ax.show_message("FileHost", "Invalid hosting type mapping constants. Check SITE_TYPE_* values.");
-        return;
-    }
     comboConf.setItems(HOSTING_TYPE_ITEMS);
 
     let pagesByType = [];
@@ -444,24 +546,26 @@ function showHostFileDialog() {
             one_shot:     container.get("hosted_oneShot").isChecked(),
         });
     } else if(hostedType === SITE_TYPE_GITLAB) {
-        let host = container.get("gitlab_host").text();
+        let host = (container.get("gitlab_host").text() || "").trim();
         let token = container.get("gitlab_token").text();
         if (!host || host.length === 0 || !token || token.length === 0) {
             ax.show_message("FileHost", "GitLab host and access token are required.");
             return;
         }
 
-        ax.service_command("FileHost", "host_gitlab_file", {
-            host:           container.get("gitlab_host").text(),
+        let gitlabUploadReq = {
+            host:           host,
             access_token:   container.get("gitlab_token").text(),
             project:        container.get("gitlab_project").text(),
             content_type:   container.get("gitlab_contentType").currentText(),
             file_name:      container.get("gitlab_fileName").text(),
             file_b64:       fileB64,
-        });
+        };
+        setPendingGitlabRetry("host_gitlab_file", host, gitlabUploadReq);
+        ax.service_command("FileHost", "host_gitlab_file", gitlabUploadReq);
 
-        ax.service_command("FileHost", "update_gitlab_tokens", {
-            host:           container.get("gitlab_host").text(),
+        ax.service_command("FileHost", "update_gitlab_token", {
+            host:           host,
             access_token:   container.get("gitlab_token").text(), 
         });
     }
@@ -482,11 +586,14 @@ function showManageDialog() {
         let rows = W.siteTable.selectedRows();
         if (rows.length === 0) return;
         for (let i = 0; i < rows.length; i++) {
-            let type = W.siteTable.text(rows[i], 0);
             let uri  = W.siteTable.text(rows[i], 1);
             let host = W.siteTable.text(rows[i], 2);
             let port = W.siteTable.text(rows[i], 3);
             let siteKey = host + ":" + port + uri;
+            let site = getSiteByKey(siteKey);
+            if (site && site.type === SITE_TYPE_GITLAB) {
+                setPendingGitlabRetry("remove_site", site.host, { site_key: siteKey });
+            }
             ax.service_command("FileHost", "remove_site", { site_key: siteKey });
         }
     });
@@ -494,7 +601,7 @@ function showManageDialog() {
     form.connect(copyUrlBtn, "clicked", function() {
         let rows = W.siteTable.selectedRows();
         if (rows.length === 0) return;
-        let url = W.siteTable.text(rows[0], 9);
+        let url = W.siteTable.text(rows[0], 10);
         ax.copy_to_clipboard(url);
     });
 
