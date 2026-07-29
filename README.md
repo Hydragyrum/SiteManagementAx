@@ -5,6 +5,7 @@ A file hosting and scripted web delivery service for AdaptixC2. Host files over 
 ## Features
 
 - Host arbitrary files on any interface/port with HTTP or HTTPS
+- Add external HTTP/HTTPS links as managed sites (host/port/path parsed from URL)
 - Persistent hosting across server restarts (stored in Adaptix DB)
 - One-shot mode: serve the file once, then auto-remove
 - 17 built-in delivery methods across Windows, Linux, and cross-platform
@@ -13,6 +14,8 @@ A file hosting and scripted web delivery service for AdaptixC2. Host files over 
 - HTTP Range request support (required by `bitsadmin`)
 - Real-time download counter broadcast to all operators
 - Auto-detection of MIME types from file extension
+- Redirect-aware external metadata fetch (filename/content-type/content-length)
+- SSRF guardrails for external metadata lookups (blocks localhost/private/link-local targets)
 - GUI integrated into Adaptix main menu (Site Management)
 
 ## Directory Structure
@@ -25,6 +28,7 @@ file_host/
   site_manager.go     Site persistence and in-memory state
   file_server.go      HTTP(S) serving and server pool
   gitlab_client.go    GitLab upload/delete and token loading
+  external_url.go     External URL parse/fetch/SSRF guard helpers
   handlers_*.go       Service command handlers
   token_crypto.go     GitLab token encryption
   oneliner.go         Delivery method templates and PS encoding
@@ -92,10 +96,11 @@ After loading, a **Site Management** menu appears in the Adaptix client main men
 
 ### Host File
 
-Upload a file to serve over HTTP/HTTPS.
+Create a managed site from one of three hosting types: local hosted file, GitLab upload, or external URL.
 
 | Field | Description |
 |-------|-------------|
+| Hosting Type | Hosted, GitLab, or External |
 | File | Local file to host (Browse to select) |
 | URI Path | URL path the file will be served at (e.g. `/hosted/payload.bin`) |
 | Bind Host | Network interface to bind (0.0.0.0 = all interfaces) |
@@ -104,6 +109,7 @@ Upload a file to serve over HTTP/HTTPS.
 | Download Name | Optional `Content-Disposition` filename |
 | Enable SSL/TLS | Serve over HTTPS using configured cert/key |
 | One-shot | Serve the file once, then auto-remove the site |
+| External URL | Direct HTTP/HTTPS URL to track as a site (no local upload) |
 
 A confirmation popup shows the full URL, file size, and content-type on success.
 
@@ -184,7 +190,7 @@ Non-PowerShell methods (certutil, bitsadmin, curl, etc.) are unaffected by this 
 - **`pl_main.go`** - Initializes the plugin and routes service commands through `commandHandlers`.
 - **`site_types.go` / `site_manager.go`** - Define hosted sites, provider hooks, persistence, and mutex-protected state.
 - **`file_server.go`** - Manages per-host HTTP/HTTPS servers and serves files with `http.ServeContent`.
-- **`gitlab_client.go` / `handlers_*.go`** - Implement provider operations and service commands.
+- **`gitlab_client.go` / `external_url.go` / `handlers_*.go`** - Implement provider operations (GitLab + external URL) and service commands.
 - **`oneliner.go`** - Template-based one-liner generation. `formatPS` handles PowerShell encoding modes. `encodePS` performs UTF-16LE base64 encoding.
 
 ### Client-Side (AxScript)
@@ -221,3 +227,4 @@ Sites are stored via `TsExtenderDataSave` with key prefix `site:`. On server res
 | mshta fails with SSL | Same as above |
 | `powershell -c '...'` from cmd.exe prints as text | cmd.exe doesn't recognize single quotes; use `-enc` checkbox |
 | regsvr32 requires `.sct` format | Only loads scriptlet XML, not arbitrary payloads |
+| Some external URLs may fail metadata fetch | Request blocked by SSRF safeguards or remote server denies/filters metadata requests |
