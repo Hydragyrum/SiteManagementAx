@@ -194,6 +194,7 @@ function promptGitlabTokenUpdate(host) {
     ax.service_command("FileHost", "update_gitlab_token", {
         host: cleanHost,
         access_token: token,
+        retry_pending: true,
     });
     STATE.gitlabTokenPromptOpen = false;
     return true;
@@ -302,7 +303,9 @@ function data_handler(data) {
             promptGitlabTokenUpdate(r.host);
             break;
         case "gitlab_token_updated":
-            retryPendingGitlabOperation(r.host);
+            if (r.retry_pending) {
+                retryPendingGitlabOperation(r.host);
+            }
             break;
 
         case "error":

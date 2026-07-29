@@ -898,8 +898,9 @@ func sitePayload(site *HostedSite) map[string]any {
 
 func handleUpdateGitlabToken(operator string, args string) {
 	var req struct {
-		Host        string `json:"host"`
-		AccessToken string `json:"access_token"`
+		Host         string `json:"host"`
+		AccessToken  string `json:"access_token"`
+		RetryPending bool   `json:"retry_pending"`
 	}
 	if err := json.Unmarshal([]byte(args), &req); err != nil {
 		sendError(operator, "Invalid args: "+err.Error())
@@ -927,8 +928,9 @@ func handleUpdateGitlabToken(operator string, args string) {
 	fmt.Printf("[FileHost] GitLab token updated host=%s operator=%s key=%s bytes=%d\n", req.Host, operator, tokenKey, len(encryptedToken))
 
 	send(operator, map[string]any{
-		"action": "gitlab_token_updated",
-		"host":   req.Host,
+		"action":        "gitlab_token_updated",
+		"host":          req.Host,
+		"retry_pending": req.RetryPending,
 	})
 }
 
