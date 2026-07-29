@@ -36,18 +36,18 @@ func InitPlugin(ts any, moduleDir string, serviceConfig string) adaptix.PluginSe
 	ModuleDir = moduleDir
 
 	for _, line := range strings.Split(serviceConfig, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "ssl_cert:") {
-			val := strings.TrimSpace(strings.TrimPrefix(line, "ssl_cert:"))
-			SSLCert = strings.Trim(val, `"'`)
+		key, value, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
 		}
-		if strings.HasPrefix(line, "ssl_key:") {
-			val := strings.TrimSpace(strings.TrimPrefix(line, "ssl_key:"))
-			SSLKey = strings.Trim(val, `"'`)
-		}
-		if strings.HasPrefix(line, "token_enc_key:") {
-			val := strings.TrimSpace(strings.TrimPrefix(line, "token_enc_key:"))
-			TokenEncKeyPass = strings.Trim(val, `"'`)
+		value = strings.Trim(strings.TrimSpace(value), `"'`)
+		switch strings.TrimSpace(key) {
+		case "ssl_cert":
+			SSLCert = value
+		case "ssl_key":
+			SSLKey = value
+		case "token_enc_key":
+			TokenEncKeyPass = value
 		}
 	}
 

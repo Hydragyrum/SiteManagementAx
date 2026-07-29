@@ -6,9 +6,7 @@ var W = {};
 var STATE = {
     sites:               [],
     interfaces:          ["0.0.0.0"],
-    pendingGitlabUpload: null,
-    pendingGitlabRemove: null,
-    retryGitlabCommand:  "",
+    pendingGitlabOperation: null,
     latestGitlabTokens:  {},
     gitlabTokenPromptOpen: false,
 };
@@ -16,11 +14,8 @@ var STATE = {
 const SITE_TYPE_DEFAULT = 0;
 const SITE_TYPE_GITLAB = 1;
 
-const HOSTING_TYPES = [];
-HOSTING_TYPES[SITE_TYPE_DEFAULT] = { label: "Hosted", emoji: "🏠" };
-HOSTING_TYPES[SITE_TYPE_GITLAB] = { label: "GitLab", emoji: "🦊" };
-const HOSTING_TYPE_ITEMS = HOSTING_TYPES.map(function(t) { return t.label; });
-const HOSTING_TYPE_EMOJIS = HOSTING_TYPES.map(function(t) { return t.emoji; });
+const HOSTING_TYPE_ITEMS = ["Hosted", "GitLab"];
+const HOSTING_TYPE_EMOJIS = ["🏠", "🦊"];
 
 var CONTENT_TYPES = [
     "application/octet-stream",
@@ -132,43 +127,29 @@ function getSiteByKey(siteKey) {
 }
 
 function setPendingGitlabRetry(command, host, payload) {
-    let pending = {
+    STATE.pendingGitlabOperation = {
+        command: command,
         host: (host || "").trim(),
         payload: payload,
     };
-    if (command === "host_gitlab_file") {
-        STATE.pendingGitlabUpload = pending;
-    } else if (command === "remove_site") {
-        STATE.pendingGitlabRemove = pending;
-    }
 }
 
-function retryPendingGitlabOperation(host, command) {
+function retryPendingGitlabOperation(host) {
     let cleanHost = (host || "").trim();
-    let pending = null;
-    if (command === "host_gitlab_file") {
-        pending = STATE.pendingGitlabUpload;
-    } else if (command === "remove_site") {
-        pending = STATE.pendingGitlabRemove;
-    }
+    let pending = STATE.pendingGitlabOperation;
     if (!pending || pending.host !== cleanHost) return;
 
-    if (command === "host_gitlab_file") {
+    if (pending.command === "host_gitlab_file") {
         let latestToken = STATE.latestGitlabTokens[cleanHost];
         if (latestToken && pending.payload) {
             pending.payload.access_token = latestToken;
         }
     }
-    ax.service_command("FileHost", command, pending.payload);
-
-    if (command === "host_gitlab_file") {
-        STATE.pendingGitlabUpload = null;
-    } else if (command === "remove_site") {
-        STATE.pendingGitlabRemove = null;
-    }
+    STATE.pendingGitlabOperation = null;
+    ax.service_command("FileHost", pending.command, pending.payload);
 }
 
-function promptGitlabTokenUpdate(host, statusCode) {
+function promptGitlabTokenUpdate(host) {
     if (STATE.gitlabTokenPromptOpen) {
         return false;
     }
@@ -180,9 +161,6 @@ function promptGitlabTokenUpdate(host, statusCode) {
 
     let title = "GitLab Token Required";
     let msg = "Authentication failed for " + cleanHost;
-    if (statusCode === 401 || statusCode === 403) {
-        msg += " (HTTP " + statusCode + ")";
-    }
 
     let label = form.create_label(msg + "\nEnter updated access token:");
     let tokenInput = form.create_textline("");
@@ -275,8 +253,8 @@ function data_handler(data) {
                 url:          r.url,
                 type:         r.type,
             });
-            if (r.type === SITE_TYPE_GITLAB) {
-                STATE.pendingGitlabUpload = null;
+            if (r.type === SITE_TYPE_GITLAB && STATE.pendingGitlabOperation && STATE.pendingGitlabOperation.command === "host_gitlab_file") {
+                STATE.pendingGitlabOperation = null;
             }
             refreshSiteTable();
             ax.show_message("File Hosted", "Type: " + HOSTING_TYPE_ITEMS[r.type] + "\nURL: " + r.url + "\nSize: " + ax.format_size(r.file_size) + "\nContent-Type: " + r.content_type + (r.one_shot ? "\nOne-shot: Yes" : ""));
@@ -289,8 +267,9 @@ function data_handler(data) {
                     break;
                 }
             }
-            if (STATE.pendingGitlabRemove && STATE.pendingGitlabRemove.payload && STATE.pendingGitlabRemove.payload.site_key === r.site_key) {
-                STATE.pendingGitlabRemove = null;
+            if (STATE.pendingGitlabOperation && STATE.pendingGitlabOperation.command === "remove_site" &&
+                STATE.pendingGitlabOperation.payload && STATE.pendingGitlabOperation.payload.site_key === r.site_key) {
+                STATE.pendingGitlabOperation = null;
             }
             refreshSiteTable();
             break;
@@ -320,16 +299,10 @@ function data_handler(data) {
             }
             break;
         case "gitlab_token_required":
-            STATE.retryGitlabCommand = r.command || "";
-            if (!promptGitlabTokenUpdate(r.host, r.status)) {
-                STATE.retryGitlabCommand = "";
-            }
+            promptGitlabTokenUpdate(r.host);
             break;
         case "gitlab_token_updated":
-            retryPendingGitlabOperation(r.host, STATE.retryGitlabCommand);
-            retryPendingGitlabOperation(r.host, "remove_site");
-            retryPendingGitlabOperation(r.host, "host_gitlab_file");
-            STATE.retryGitlabCommand = "";
+            retryPendingGitlabOperation(r.host);
             break;
 
         case "error":
@@ -462,18 +435,9 @@ function showHostFileDialog() {
     let comboConf = form.create_combo();
     comboConf.setItems(HOSTING_TYPE_ITEMS);
 
-    let pagesByType = [];
-    pagesByType[SITE_TYPE_DEFAULT] = getHostedFileParams(container);
-    pagesByType[SITE_TYPE_GITLAB] = getGitlabParams(container);
-
     let stack = form.create_stack();
-    for (let i = 0; i < HOSTING_TYPE_ITEMS.length; i++) {
-        if (!pagesByType[i]) {
-            ax.show_message("FileHost", "Missing stack page for hosting type index " + i + ".");
-            return;
-        }
-        stack.addPage(pagesByType[i], HOSTING_TYPE_ITEMS[i] + " Options");
-    }
+    stack.addPage(getHostedFileParams(container), HOSTING_TYPE_ITEMS[SITE_TYPE_DEFAULT] + " Options");
+    stack.addPage(getGitlabParams(container), HOSTING_TYPE_ITEMS[SITE_TYPE_GITLAB] + " Options");
 
     form.connect(comboConf, "currentIndexChanged", function(idx) {
         stack.setCurrentIndex(idx);
