@@ -20,12 +20,25 @@ type Teamserver interface {
 
 type PluginService struct{}
 
+type commandHandler func(operator string, args string)
+
+var commandHandlers = map[string]commandHandler{
+	"host_file":           handleHostFile,
+	"host_gitlab_file":    handleHostGitlabFile,
+	"remove_site":         handleRemoveSite,
+	"list_sites":          handleListSites,
+	"generate_attack":     handleGenerateAttack,
+	"get_gitlab_token":    handleGetGitlabToken,
+	"update_gitlab_token": handleUpdateGitlabToken,
+}
+
 var (
-	Ts        Teamserver
-	ModuleDir string
-	SSLCert   string
-	SSLKey    string
-	SiteMgr   *SiteManager
+	Ts              Teamserver
+	ModuleDir       string
+	SSLCert         string
+	SSLKey          string
+	SiteMgr         *SiteManager
+	TokenEncKeyPass string
 )
 
 func InitPlugin(ts any, moduleDir string, serviceConfig string) adaptix.PluginService {
@@ -33,14 +46,18 @@ func InitPlugin(ts any, moduleDir string, serviceConfig string) adaptix.PluginSe
 	ModuleDir = moduleDir
 
 	for _, line := range strings.Split(serviceConfig, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "ssl_cert:") {
-			val := strings.TrimSpace(strings.TrimPrefix(line, "ssl_cert:"))
-			SSLCert = strings.Trim(val, `"'`)
+		key, value, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
 		}
-		if strings.HasPrefix(line, "ssl_key:") {
-			val := strings.TrimSpace(strings.TrimPrefix(line, "ssl_key:"))
-			SSLKey = strings.Trim(val, `"'`)
+		value = strings.Trim(strings.TrimSpace(value), `"'`)
+		switch strings.TrimSpace(key) {
+		case "ssl_cert":
+			SSLCert = value
+		case "ssl_key":
+			SSLKey = value
+		case "token_enc_key":
+			TokenEncKeyPass = value
 		}
 	}
 
@@ -54,18 +71,12 @@ func InitPlugin(ts any, moduleDir string, serviceConfig string) adaptix.PluginSe
 }
 
 func (p *PluginService) Call(operator string, function string, args string) {
-	switch function {
-	case "host_file":
-		go handleHostFile(operator, args)
-	case "remove_site":
-		go handleRemoveSite(operator, args)
-	case "list_sites":
-		go handleListSites(operator)
-	case "generate_attack":
-		go handleGenerateAttack(operator, args)
-	default:
+	handler, ok := commandHandlers[function]
+	if !ok {
 		sendError(operator, "Unknown function: "+function)
+		return
 	}
+	go handler(operator, args)
 }
 
 func send(operator string, payload any) {

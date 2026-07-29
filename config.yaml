@@ -6,3 +6,4 @@ service_name: "FileHost"
 service_config: |
   ssl_cert: "server.rsa.crt"
   ssl_key: "server.rsa.key"
+  token_enc_key: "CHANGE_ME_WITH_A_LONG_RANDOM_SECRET"
