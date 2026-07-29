@@ -1,8 +1,6 @@
 package main
 
 import (
-	"crypto/pbkdf2"
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -93,15 +91,4 @@ func broadcast(payload any) {
 
 func sendError(operator string, msg string) {
 	send(operator, map[string]string{"action": "error", "message": msg})
-}
-
-func deriveAES256Key(passphrase string, salt []byte) ([]byte, error) {
-	if strings.TrimSpace(passphrase) == "" {
-		return nil, fmt.Errorf("passphrase cannot be empty")
-	}
-	if len(salt) == 0 {
-		return nil, fmt.Errorf("salt cannot be empty")
-	}
-	// PBKDF2-HMAC-SHA256, 600k iterations, 32 bytes (AES-256)
-	return pbkdf2.Key(sha256.New, passphrase, salt, 600000, 32)
 }
