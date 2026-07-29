@@ -6,8 +6,9 @@ import (
 )
 
 const (
-	SiteTypeDefault = 0
-	SiteTypeGitLab  = 1
+	SiteTypeDefault  = 0
+	SiteTypeGitLab   = 1
+	SiteTypeExternal = 2
 )
 
 var errGitLabAuthRequired = errors.New("gitlab auth required")
@@ -72,6 +73,11 @@ var siteProviders = map[int]siteProvider{
 	SiteTypeGitLab: {
 		remove:      removeSiteFromGitLab,
 		removeError: "Failed to remove GitLab hosted file; saved site kept",
+	},
+	SiteTypeExternal: {
+		remove: func(_ *HostedSite, _ string) error {
+			return nil
+		},
 	},
 }
 

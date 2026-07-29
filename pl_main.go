@@ -25,6 +25,7 @@ type commandHandler func(operator string, args string)
 var commandHandlers = map[string]commandHandler{
 	"host_file":           handleHostFile,
 	"host_gitlab_file":    handleHostGitlabFile,
+	"host_external_url":   handleHostExternalURL,
 	"remove_site":         handleRemoveSite,
 	"list_sites":          handleListSites,
 	"generate_attack":     handleGenerateAttack,
