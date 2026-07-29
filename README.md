@@ -21,7 +21,12 @@ A file hosting and scripted web delivery service for AdaptixC2. Host files over 
 file_host/
   config.yaml         Plugin metadata (service type, name, SSL paths)
   pl_main.go          Plugin entrypoint - InitPlugin, Call dispatcher
-  handler.go          SiteManager, ServerPool, HTTP handler, API handlers
+  site_types.go       Hosted site model and provider registry
+  site_manager.go     Site persistence and in-memory state
+  file_server.go      HTTP(S) serving and server pool
+  gitlab_client.go    GitLab upload/delete and token loading
+  handlers_*.go       Service command handlers
+  token_crypto.go     GitLab token encryption
   oneliner.go         Delivery method templates and PS encoding
   ax_config.axs       AxScript GUI - Host File, Manage, Attacks dialogs
   Makefile             Build + deploy targets
@@ -176,8 +181,10 @@ Non-PowerShell methods (certutil, bitsadmin, curl, etc.) are unaffected by this 
 
 ### Server-Side (Go Plugin)
 
-- **`pl_main.go`** - `InitPlugin` receives the Teamserver interface, parses SSL config, initializes `SiteManager`, restores persisted sites. `Call` dispatches to handler functions.
-- **`handler.go`** - `SiteManager` stores hosted sites in memory with mutex-protected access. `ServerPool` manages per-host:port HTTP/HTTPS servers. `FileServer.ServeHTTP` serves files with `http.ServeContent` (handles Range, HEAD, Content-Length). Handlers for `host_file`, `remove_site`, `list_sites`, `generate_attack`.
+- **`pl_main.go`** - Initializes the plugin and routes service commands through `commandHandlers`.
+- **`site_types.go` / `site_manager.go`** - Define hosted sites, provider hooks, persistence, and mutex-protected state.
+- **`file_server.go`** - Manages per-host HTTP/HTTPS servers and serves files with `http.ServeContent`.
+- **`gitlab_client.go` / `handlers_*.go`** - Implement provider operations and service commands.
 - **`oneliner.go`** - Template-based one-liner generation. `formatPS` handles PowerShell encoding modes. `encodePS` performs UTF-16LE base64 encoding.
 
 ### Client-Side (AxScript)

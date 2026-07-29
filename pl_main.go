@@ -20,6 +20,18 @@ type Teamserver interface {
 
 type PluginService struct{}
 
+type commandHandler func(operator string, args string)
+
+var commandHandlers = map[string]commandHandler{
+	"host_file":           handleHostFile,
+	"host_gitlab_file":    handleHostGitlabFile,
+	"remove_site":         handleRemoveSite,
+	"list_sites":          handleListSites,
+	"generate_attack":     handleGenerateAttack,
+	"get_gitlab_token":    handleGetGitlabToken,
+	"update_gitlab_token": handleUpdateGitlabToken,
+}
+
 var (
 	Ts              Teamserver
 	ModuleDir       string
@@ -59,24 +71,12 @@ func InitPlugin(ts any, moduleDir string, serviceConfig string) adaptix.PluginSe
 }
 
 func (p *PluginService) Call(operator string, function string, args string) {
-	switch function {
-	case "host_file":
-		go handleHostFile(operator, args)
-	case "host_gitlab_file":
-		go handleHostGitlabFile(operator, args)
-	case "remove_site":
-		go handleRemoveSite(operator, args)
-	case "list_sites":
-		go handleListSites(operator)
-	case "generate_attack":
-		go handleGenerateAttack(operator, args)
-	case "get_gitlab_token":
-		go handleGetGitlabToken(operator, args)
-	case "update_gitlab_token":
-		go handleUpdateGitlabToken(operator, args)
-	default:
+	handler, ok := commandHandlers[function]
+	if !ok {
 		sendError(operator, "Unknown function: "+function)
+		return
 	}
+	go handler(operator, args)
 }
 
 func send(operator string, payload any) {
