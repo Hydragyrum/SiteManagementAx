@@ -6,6 +6,7 @@ func TestExtensionRegistries(t *testing.T) {
 	for _, command := range []string{
 		"host_file",
 		"host_gitlab_file",
+		"host_external_url",
 		"remove_site",
 		"list_sites",
 		"generate_attack",
@@ -17,7 +18,7 @@ func TestExtensionRegistries(t *testing.T) {
 		}
 	}
 
-	for _, siteType := range []int{SiteTypeDefault, SiteTypeGitLab} {
+	for _, siteType := range []int{SiteTypeDefault, SiteTypeGitLab, SiteTypeExternal} {
 		if siteProviders[siteType].remove == nil {
 			t.Fatalf("missing remove handler for site type %d", siteType)
 		}

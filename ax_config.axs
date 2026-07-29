@@ -14,9 +14,10 @@ var STATE = {
 
 const SITE_TYPE_DEFAULT = 0;
 const SITE_TYPE_GITLAB = 1;
+const SITE_TYPE_EXTERNAL = 2;
 
-const HOSTING_TYPE_ITEMS = ["Hosted", "GitLab"];
-const HOSTING_TYPE_EMOJIS = ["🏠", "🦊"];
+const HOSTING_TYPE_ITEMS = ["Hosted", "GitLab", "External"];
+const HOSTING_TYPE_EMOJIS = ["🏠", "🦊", "🌐"];
 
 var CONTENT_TYPES = [
     "application/octet-stream",
@@ -431,6 +432,21 @@ function getGitlabParams(container) {
     return panel;
 }
 
+function getExternalParams(container) {
+    let labelURL  = form.create_label("External URL:");
+    let textURL   = form.create_textline("");
+    container.put("external_url", textURL);
+
+    let grid = form.create_gridlayout();
+    grid.addWidget(labelURL,      0, 0, 1, 1);
+    grid.addWidget(textURL,       0, 1, 1, 3);
+
+    let panel = form.create_panel();
+    panel.setLayout(grid);
+
+    return panel;
+}
+
 function showHostFileDialog() {
     let container = form.create_container();
     let labelFile = form.create_label("File:");
@@ -446,6 +462,7 @@ function showHostFileDialog() {
     let stack = form.create_stack();
     stack.addPage(getHostedFileParams(container), HOSTING_TYPE_ITEMS[SITE_TYPE_DEFAULT] + " Options");
     stack.addPage(getGitlabParams(container), HOSTING_TYPE_ITEMS[SITE_TYPE_GITLAB] + " Options");
+    stack.addPage(getExternalParams(container), HOSTING_TYPE_ITEMS[SITE_TYPE_EXTERNAL] + " Options");
 
     form.connect(comboConf, "currentIndexChanged", function(idx) {
         stack.setCurrentIndex(idx);
@@ -487,19 +504,21 @@ function showHostFileDialog() {
     dialog.setButtonsText("Host", "Cancel");
 
     if (!dialog.exec()) return;
-
-    if (!selectedPath || selectedPath.length === 0) {
-        ax.show_message("FileHost", "No file selected.");
-        return;
-    }
-
-    let fileB64 = ax.file_read(selectedPath);
-    if (!fileB64 || fileB64.length === 0) {
-        ax.show_message("FileHost", "Failed to read file.");
-        return;
-    }
-
     let hostedType = comboConf.currentIndex();
+
+    if( hostedType !== SITE_TYPE_EXTERNAL ) {   // Do not handle uploading to an external URL, just pass the URL to the service
+        if (!selectedPath || selectedPath.length === 0) {
+            ax.show_message("FileHost", "No file selected.");
+            return;
+        }
+
+        let fileB64 = ax.file_read(selectedPath);
+        if (!fileB64 || fileB64.length === 0) {
+            ax.show_message("FileHost", "Failed to read file.");
+            return;
+        }
+    }
+
     if(hostedType === SITE_TYPE_DEFAULT) {
         let uri = container.get("hosted_uri").text();
         if (!uri || uri.length === 0) {
@@ -540,6 +559,13 @@ function showHostFileDialog() {
             host:           host,
             access_token:   container.get("gitlab_token").text(), 
         });
+    } else if (hostedType === SITE_TYPE_EXTERNAL) {
+        let url = container.get("external_url").text();
+        if (!url || url.length === 0) {
+            ax.show_message("FileHost", "External URL is required.");
+            return;
+        }
+        ax.service_command("FileHost", "host_external_url", { url: url });
     }
 }
 
